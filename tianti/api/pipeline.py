@@ -13,13 +13,14 @@ from __future__ import annotations
 import importlib
 import inspect
 import json
+import platform as _platform
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from .. import __version__
 from ..core.config import Config
 from ..core.errors import SampleError, SandboxUnavailable, TraceError
-from ..core.model import Sample
+from ..core.model import Sample, SampleType
 from ..core.verdict import ScoreItem, Verdict, confidence_from, decide
 from ..detect.base import SEVERITY_RANK, DetectorHit
 from ..report.base import ScanResult
@@ -464,6 +465,49 @@ def analyze_trace(
     return result
 
 
+
+# --------------------------------------------------------------------- 类型与执行能力
+_DYNAMIC_PE_SUFFIX_EXCLUDE = {".dll", ".sys", ".ocx", ".cpl", ".scr", ".drv", ".efi"}
+_DYNAMIC_SUFFIXES = {
+    SampleType.SCRIPT_POWERSHELL: {".ps1"},
+    SampleType.SCRIPT_BATCH: {".bat", ".cmd"},
+    SampleType.SCRIPT_JS: {".js"},
+    SampleType.SCRIPT_VBS: {".vbs"},
+}
+
+
+def dynamically_executable(sample: Sample) -> bool:
+    """判断样本能否交给沙箱动态执行（与 containment 的启动器能力一致）。"""
+    suffix = Path(sample.name).suffix.lower()
+    if sample.type in (SampleType.PE32, SampleType.PE64):
+        return suffix not in _DYNAMIC_PE_SUFFIX_EXCLUDE
+    allowed = _DYNAMIC_SUFFIXES.get(sample.type)
+    return bool(allowed) and suffix in allowed
+
+
+def _static_only_trace(sample: Sample, *, policy: str) -> Trace:
+    """给不执行的文件构造一条空轨迹，让规则/检测/评分/报告链路仍可跑。"""
+    from ..trace.normalize import EventBuilder, build_trace
+    from ..trace.schema import SandboxInfo, SandboxLimits
+
+    builder = EventBuilder(max_events=1, source="static-only")
+    sandbox = SandboxInfo(
+        host=_platform.node(),
+        isolation=["static-only", "no-execution"],
+        limits=SandboxLimits(timeout_s=0, mem_mb=0, cpu_s=0, network="n/a"),
+        started_at="",
+        ended_at="",
+        terminated_by="not-executed",
+    )
+    return build_trace(
+        sample=sample,
+        engine_version=__version__,
+        backend="static",
+        policy=policy,
+        sandbox=sandbox,
+        builder=builder,
+    )
+
 def _is_trace_file(path: Path) -> bool:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -603,6 +647,23 @@ def scan_path(
         return result
 
     static_payload = run_static(target, config=cfg)
+    sample = Sample.from_path(target)
+    if not dynamically_executable(sample):
+        trace = _static_only_trace(sample, policy=(policy or cfg.default_policy))
+        result = analyze_trace(trace, static=static_payload, config=cfg, include_upstream=include_upstream)
+        result.notes.insert(
+            0,
+            f"样本类型 {sample.type.value} 不支持沙箱动态执行，已完成静态分析"
+            "（无行为轨迹，结论仅基于静态信号/文件名/内容特征，置信度相应降低）。",
+        )
+        result.extra["input"] = "static-only"
+        result.extra["backend"] = {
+            "backend": "static",
+            "requested": policy or cfg.default_policy,
+            "fallback": False,
+            "attempts": [],
+        }
+        return result
     trace, backend_info = run_backend(target, policy_name=policy, config=cfg)
     trace.extra.setdefault("source_path", str(target))
     result = analyze_trace(trace, static=static_payload, config=cfg, include_upstream=include_upstream)

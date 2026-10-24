@@ -1,0 +1,69 @@
+"""非可执行文件回落静态分析（不交给沙箱执行）。"""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+from tianti.api import pipeline
+from tianti.report import ScanResult
+
+
+def _minimal_pe64() -> bytes:
+    head = bytearray(0x200)
+    head[0:2] = b"MZ"
+    head[0x3C:0x40] = (0x40).to_bytes(4, "little")
+    head[0x40:0x44] = b"PE\x00\x00"
+    head[0x44:0x46] = (0x8664).to_bytes(2, "little")
+    return bytes(head)
+
+
+class StaticOnlyScanTests(unittest.TestCase):
+    def test_text_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "readme.txt"
+            path.write_text("hello yutian analysis", encoding="utf-8")
+            result = pipeline.scan_path(path)
+        self.assertIsInstance(result, ScanResult)
+        self.assertEqual(result.extra.get("input"), "static-only")
+        self.assertEqual(dict(result.extra.get("backend") or {}).get("backend"), "static")
+        self.assertEqual(result.events, [])
+        self.assertEqual(result.trace.get("sandbox", {}).get("terminated_by"), "not-executed")
+        self.assertTrue(any("静态分析" in note for note in result.notes))
+
+    def test_zip_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "sample.zip"
+            with zipfile.ZipFile(path, "w") as handle:
+                handle.writestr("readme.txt", "hello")
+            result = pipeline.scan_path(path)
+        self.assertEqual(result.extra.get("input"), "static-only")
+        self.assertEqual(result.sample.get("type"), "archive/zip")
+        self.assertEqual(result.events, [])
+
+    def test_dll_is_static_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "library.dll"
+            path.write_bytes(_minimal_pe64())
+            result = pipeline.scan_path(path)
+        self.assertEqual(result.sample.get("type"), "pe64")
+        self.assertEqual(result.extra.get("input"), "static-only")
+
+    def test_executable_still_uses_sandbox(self) -> None:
+        """exe 不应被误判成静态-only（这里只验证类型判定，不真的执行）。"""
+        from tianti.core.model import Sample
+
+        exe = Sample.from_bytes(_minimal_pe64(), "demo.exe")
+        dll = Sample.from_bytes(_minimal_pe64(), "demo.dll")
+        self.assertTrue(pipeline.dynamically_executable(exe))
+        self.assertFalse(pipeline.dynamically_executable(dll))
+
+    def test_script_type_detection(self) -> None:
+        from tianti.core.model import Sample
+
+        ps1 = Sample.from_bytes(b"Write-Host hi", "a.ps1")
+        psm1 = Sample.from_bytes(b"function x {}", "a.psm1")
+        self.assertTrue(pipeline.dynamically_executable(ps1))
+        self.assertFalse(pipeline.dynamically_executable(psm1))

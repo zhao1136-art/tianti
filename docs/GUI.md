@@ -39,6 +39,12 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 - 「停止」会**立即强杀当前沙箱进程**（`taskkill /T /F` 杀整棵进程树，Job Object KILL_ON_JOB_CLOSE 兜底），然后停止后续文件；
 - 默认自动模式优先离线回放，反复调规则时不执行样本、也不会触发本机火绒 HIPS 弹窗。
 
+## 支持哪些输入
+
+- 动态执行：PE32/PE64 `.exe`、`.ps1`、`.bat/.cmd`、`.js`、`.vbs`；
+- 仅静态：DLL/SYS、zip/rar/7z、Office、PDF、文本/Markdown/JSON、图片等（不执行，自动回落静态分析并在备注标明）；
+- 离线回放：`tianti.trace/1` 轨迹 JSON；CAPE/capa 报告先用 `convert-cape` 转轨迹。
+
 ## 已知限制
 
 - 只做单机本地分析，不含远程/多用户；

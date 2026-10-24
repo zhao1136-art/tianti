@@ -61,6 +61,16 @@ _SUFFIX_TYPES: dict[str, SampleType] = {
     ".ppt": SampleType.OFFICE_PPT,
     ".pptx": SampleType.OFFICE_PPT,
     ".txt": SampleType.TEXT,
+    ".md": SampleType.TEXT,
+    ".json": SampleType.TEXT,
+    ".xml": SampleType.TEXT,
+    ".html": SampleType.TEXT,
+    ".htm": SampleType.TEXT,
+    ".csv": SampleType.TEXT,
+    ".log": SampleType.TEXT,
+    ".ini": SampleType.TEXT,
+    ".yaml": SampleType.TEXT,
+    ".yml": SampleType.TEXT,
 }
 
 
@@ -89,6 +99,14 @@ def _looks_text(data: bytes) -> bool:
         return False
     if b"\x00" in data[:4096]:
         return False
+    # 先按 UTF-8 严格解码：中文/日文等文本按字节可打印率会被误判，UTF-8 判定更准
+    try:
+        decoded = data[:8192].decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    else:
+        if not any(ord(ch) < 32 and ch not in "\t\n\r" for ch in decoded):
+            return True
     sample = data[:8192]
     printable = sum(1 for b in sample if 32 <= b < 127 or b in (9, 10, 13))
     return printable / len(sample) > 0.90

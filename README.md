@@ -76,6 +76,18 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 - 判定：分数/置信度/证据链/抑制明细，clean/suspicious/malicious 三档。
 - 交付：CLI、Tk 桌面前端、单文件 HTML 报告、本地 HTTP API。
 
+## 支持的输入
+
+| 输入 | 处理方式 |
+|------|----------|
+| PE32 / PE64：`.exe`（以及无扩展名 PE） | 静态预筛 + **沙箱动态执行**，产出行为轨迹 |
+| PowerShell `.ps1` / 批处理 `.bat` `.cmd` / JScript `.js` / VBScript `.vbs` | 静态预筛 + **脚本宿主执行**（powershell/cmd/cscript） |
+| DLL/SYS/OCX/CPL/SCR、压缩包（zip/rar/7z）、Office（doc/docx/xls/xlsx/ppt/pptx）、PDF、文本/Markdown/JSON、图片等 | **仅静态分析**（不执行，产出类型/哈希/信号/嵌入物检测，结论置信度相应降低） |
+| `tianti.trace/1` 轨迹 JSON | **离线回放**（不执行） |
+| CAPE / capa 动态报告 JSON | 先 `convert-cape` 转轨迹，再按轨迹分析（可命中 api 级上游规则） |
+
+沙箱执行类型与 containment 启动器能力一致：遇到不能执行的文件不会尝试启动，而是自动回落到静态分析并在结果 notes 中标明。
+
 ## 已知限制
 
 - 本机无虚拟化：containment 是「受限执行」而非 VM 隔离，只跑无害样本；真实恶意样本需独立 VM。
