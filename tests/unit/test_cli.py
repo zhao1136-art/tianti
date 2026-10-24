@@ -7,6 +7,7 @@ import json
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
+from tianti import __version__
 from tianti.cli import EXIT_OK, main
 
 
@@ -17,7 +18,7 @@ class CliTests(unittest.TestCase):
             code = main(["version"])
         self.assertEqual(code, EXIT_OK)
         text = out.getvalue()
-        self.assertIn("0.1.0", text)
+        self.assertIn(__version__, text)
         self.assertIn("tianti.trace/1", text)
 
     def test_version_json(self):

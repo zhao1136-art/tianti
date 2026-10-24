@@ -16,12 +16,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from tianti.api.httpd import create_server
+from tianti import __version__
 from tianti.cli import build_parser, main
 from tianti.report.base import RESULT_SCHEMA
 
 GOLDEN = Path(__file__).resolve().parents[1] / "fixtures" / "traces" / "golden_ransom_sim.json"
 VERDICTS = ("clean", "suspicious", "malicious")
-SUBCOMMANDS = {"version", "trace", "replay", "rules", "detectors", "report", "scan", "convert-cape", "serve"}
+SUBCOMMANDS = {"version", "trace", "replay", "rules", "detectors", "report", "scan", "convert-cape", "gui", "serve"}
 
 
 def run_cli(argv: list[str]) -> tuple[int, str, str]:
@@ -168,7 +169,7 @@ class CliSurfaceTests(unittest.TestCase):
     def test_version_still_works(self):
         code, out, _ = run_cli(["version"])
         self.assertEqual(code, 0)
-        self.assertIn("0.1.0", out)
+        self.assertIn(__version__, out)
         self.assertIn("tianti.trace/1", out)
         code, out, _ = run_cli(["version", "--check"])
         self.assertEqual(code, 0)

@@ -487,6 +487,24 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------- parser
+def cmd_gui(args: argparse.Namespace) -> int:
+    """启动 Tk 桌面前端（tkinter 缺失时给出可读错误）。"""
+    try:
+        from .gui.app import main as gui_main
+    except ImportError as exc:
+        sys.stderr.write(f"当前 Python 缺少 tkinter，无法启动 GUI：{exc}\n")
+        return EXIT_ERROR
+    argv: list[str] = []
+    for name in ("path", "trace", "screenshot"):
+        value = getattr(args, name, None)
+        if value:
+            argv.extend([f"--{name}", str(value)])
+    if getattr(args, "demo", False):
+        argv.append("--demo")
+    if getattr(args, "smoke", False):
+        argv.append("--smoke")
+    return int(gui_main(argv))
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tianti",
@@ -557,6 +575,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_convert.add_argument("report", help="CAPE / capa 动态报告 JSON 路径")
     p_convert.add_argument("--out", default=None, help="输出 trace JSON（默认 out/<report>.trace.json）")
     p_convert.set_defaults(func=cmd_convert_cape)
+
+    p_gui = sub.add_parser("gui", help="启动 Tk 桌面前端")
+    p_gui.add_argument("--path", default=None, help="启动时填入的样本/轨迹路径")
+    p_gui.add_argument("--demo", action="store_true", help="加载 golden trace 演示数据")
+    p_gui.add_argument("--trace", default=None, help="配合 --demo 指定 trace 文件")
+    p_gui.add_argument("--screenshot", default=None, help="渲染后截图保存 PNG（需要 Pillow）")
+    p_gui.add_argument("--smoke", action="store_true", help="自检：创建窗口后立即退出")
+    p_gui.set_defaults(func=cmd_gui)
 
     p_serve = sub.add_parser("serve", help="启动本地 HTTP API（127.0.0.1）")
     p_serve.add_argument("--host", default="127.0.0.1", help="仅允许回环地址")

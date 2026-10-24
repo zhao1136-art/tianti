@@ -52,6 +52,20 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 & $PY -m tianti serve --port 8765
 ```
 
+## 桌面前端（Tk）
+
+![GUI](docs/screenshot_gui.png)
+
+```powershell
+& $PY -m tianti gui                 # 启动图形界面
+& $PY -m tianti gui --demo          # 加载 golden trace 演示
+& $PY -m tianti gui --smoke         # 无交互自检
+```
+
+纯标准库 tkinter 实现，复用同一套 pipeline：选择文件/目录 → 自动判断（trace JSON 离线回放 / 其他文件沙箱执行）
+→ 结果表 + 能力/危险行为/时间线/原始 JSON 详情 → 一键生成 HTML 报告。离线回放不执行样本，也不会触发火绒。
+详见 [docs/GUI.md](docs/GUI.md)。
+
 ## 当前能力
 
 - 静态预筛：PE32/PE64 结构、节区熵、导入/导出、签名目录存在性、overlay、加壳启发；脚本/归档特征；EICAR 识别（不执行）。
@@ -59,7 +73,7 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 - capa 兼容规则引擎：and/or/not/optional/count/match（DAG）、5 种 scope、54 条自研规则 + 可选 625 条官方上游规则（`--include-upstream`）。
 - 危险行为检测：26 条 YAML 检测器（时序 + 聚合 + 序列），覆盖 10 个 ATT&CK 战术。
 - 判定：分数/置信度/证据链/抑制明细，clean/suspicious/malicious 三档。
-- 交付：CLI、单文件 HTML 报告、本地 HTTP API。
+- 交付：CLI、Tk 桌面前端、单文件 HTML 报告、本地 HTTP API。
 
 ## 已知限制
 
