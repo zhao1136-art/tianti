@@ -114,6 +114,10 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 性能差距说明：rules 10k 的 591ms 主要花在 string 特征的线性正则扫描（正则无法倒排）；
 detect 已从 9.5s/1k 优化到 142ms/1k（窗口剪枝 + 编译期 hints + 加载缓存）。
 
+## 发布报告
+
+- v0.3.0：[docs/RELEASE_v0.3.0.md](docs/RELEASE_v0.3.0.md)
+
 ## 打包（便携版）
 
 生成无需安装 Python 的便携版（PyInstaller，GUI + CLI 双入口，规则/检测器/配置随包）：
