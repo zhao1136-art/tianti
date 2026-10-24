@@ -241,6 +241,12 @@ def analyze(sample: Sample | str | Path | bytes | bytearray | memoryview, data: 
             except Exception as exc:
                 signals_all.append(signal("static.analysis_error", "low", f"压缩包分析异常：{type(exc).__name__}: {exc}"))
 
+        elif sample_type in (SampleType.DATA, SampleType.UNKNOWN):
+            try:
+                signals_all.extend(_embedded_payload_signals(raw))
+            except Exception as exc:
+                signals_all.append(signal("static.analysis_error", "low", f"内嵌载荷检查异常：{type(exc).__name__}: {exc}"))
+
         # 3) 字符串 / IoC（压缩包/Office 容器内容不解压，跳过）
         is_archive_like = sample_type in ARCHIVE_TYPES or is_office_input
         if not is_archive_like:
@@ -273,6 +279,46 @@ def analyze(sample: Sample | str | Path | bytes | bytearray | memoryview, data: 
         return report
     finally:
         report.elapsed_ms = (perf_counter() - started) * 1000.0
+
+
+def _embedded_payload_signals(data: bytes, *, window: int = 4 * 1024 * 1024) -> list[dict[str, str]]:
+    """数据文件（.dat/.bin/未知类型）里找内嵌可执行/压缩包/宏/脚本标记。"""
+    out: list[dict[str, str]] = []
+    head = data[:window]
+    if not head:
+        return out
+    # 内嵌 PE：找 MZ 且 e_lfanew 指向 "PE\0\0"
+    offset = head.find(b"MZ")
+    while offset != -1:
+        if offset + 0x40 <= len(head):
+            e_lfanew = int.from_bytes(head[offset + 0x3C : offset + 0x40], "little")
+            pe_at = offset + e_lfanew
+            if 0 < e_lfanew < 0x1000 and pe_at + 4 <= len(head) and head[pe_at : pe_at + 4] == b"PE\x00\x00":
+                out.append(
+                    signal(
+                        "data.embedded_pe",
+                        "high",
+                        f"偏移 0x{offset:x} 发现内嵌 PE 可执行体（疑似打包/载荷投递）",
+                    )
+                )
+                break
+        offset = head.find(b"MZ", offset + 1)
+    if head.find(b"PK\x03\x04") > 0:
+        out.append(signal("data.embedded_zip", "medium", "发现内嵌 ZIP 数据（可能为释放的载荷/文档）"))
+    if b"vbaProject.bin" in head:
+        out.append(signal("data.embedded_macro", "high", "发现内嵌 Office 宏项目（vbaProject.bin）"))
+    lowered = head.lower()
+    for marker, label in (
+        (b"powershell", "PowerShell"),
+        (b"wscript.shell", "WScript.Shell"),
+        (b"cmd.exe /c", "cmd 命令"),
+        (b"autoopen", "Office AutoOpen"),
+        (b"createobject", "CreateObject"),
+    ):
+        if marker in lowered:
+            out.append(signal("data.script_marker", "medium", f"发现 {label} 脚本标记"))
+            break
+    return out
 
 
 def _flatten_imports(imports: list[dict[str, Any]]) -> list[str]:

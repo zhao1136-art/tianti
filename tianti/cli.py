@@ -270,6 +270,8 @@ def _scan_one(
     stem_override: str | None = None,
     include_upstream: bool = False,
     expand_archives: bool = True,
+    static_only: bool = False,
+    use_cache: bool = True,
 ) -> list[Path]:
     from .api import pipeline
     from .report import html, jsonr
@@ -280,6 +282,8 @@ def _scan_one(
         config=cfg,
         include_upstream=include_upstream,
         expand_archives=expand_archives,
+        static_only=static_only,
+        use_cache=use_cache,
     )
     common = stem_override or _result_common_name(jsonr.result_filename(result.sample_name))
     written: list[Path] = []
@@ -335,6 +339,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
                     stem_override=stem_override,
                     include_upstream=args.include_upstream,
                     expand_archives=not args.no_archive_expand,
+                    static_only=args.static_only,
+                    use_cache=not args.no_cache,
                 )
             except TiantiError as exc:
                 failed += 1
@@ -355,6 +361,8 @@ def cmd_scan(args: argparse.Namespace) -> int:
         cfg=cfg,
         include_upstream=args.include_upstream,
         expand_archives=not args.no_archive_expand,
+        static_only=args.static_only,
+        use_cache=not args.no_cache,
     )
     return EXIT_OK
 
@@ -591,6 +599,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-archive-expand",
         action="store_true",
         help="不解压 zip（只看归档级静态信号；默认展开 zip 逐条静态分析）",
+    )
+    p_scan.add_argument(
+        "--static-only",
+        action="store_true",
+        help="只做静态分析（不执行样本，不跑沙箱）",
+    )
+    p_scan.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="不使用轨迹缓存（默认命中相同样本 sha256 时复用上次沙箱轨迹，避免重复执行）",
     )
     p_scan.set_defaults(func=cmd_scan)
 

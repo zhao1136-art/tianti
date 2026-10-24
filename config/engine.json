@@ -8,7 +8,8 @@
       "network": "blocked",
       "max_events": 5000,
       "backend": "replay",
-      "follow_children": true
+      "follow_children": true,
+      "registry_snapshot": false
     },
     "deep": {
       "timeout_s": 20,
@@ -17,7 +18,8 @@
       "network": "blocked",
       "max_events": 20000,
       "backend": "containment",
-      "follow_children": true
+      "follow_children": true,
+      "registry_snapshot": true
     },
     "paranoid": {
       "timeout_s": 60,
@@ -49,6 +51,9 @@
     },
     "whitelist_paths": [],
     "whitelist_sha256": []
+  },
+  "sandbox": {
+    "trace_cache": true
   },
   "rules": {
     "include_upstream": false,

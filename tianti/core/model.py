@@ -25,6 +25,20 @@ class SampleType(str, enum.Enum):
     OFFICE_DOC = "office/doc"
     OFFICE_XLS = "office/xls"
     OFFICE_PPT = "office/ppt"
+    DOCUMENT_PDF = "document/pdf"
+    DISK_IMAGE = "disk/image"
+    SHORTCUT = "link/shortcut"
+    EMAIL = "mail/message"
+    CODE_JAVA = "code/java"
+    SCRIPT_PYTHON = "script/python"
+    PACKAGE_MSI = "package/msi"
+    CERTIFICATE = "crypto/certificate"
+    FONT = "font"
+    ARCHIVE_CAB = "archive/cab"
+    ARCHIVE_GZIP = "archive/gzip"
+    ARCHIVE_TAR = "archive/tar"
+    ELF = "elf"
+    DATA = "data"
     TEXT = "text"
     UNKNOWN = "unknown"
 
@@ -71,6 +85,49 @@ _SUFFIX_TYPES: dict[str, SampleType] = {
     ".ini": SampleType.TEXT,
     ".yaml": SampleType.TEXT,
     ".yml": SampleType.TEXT,
+    # 数据/通用二进制
+    ".dat": SampleType.DATA,
+    ".bin": SampleType.DATA,
+    ".db": SampleType.DATA,
+    ".db3": SampleType.DATA,
+    ".tmp": SampleType.DATA,
+    ".raw": SampleType.DATA,
+    ".blob": SampleType.DATA,
+    # 文档/媒体
+    ".pdf": SampleType.DOCUMENT_PDF,
+    ".lnk": SampleType.SHORTCUT,
+    ".url": SampleType.SHORTCUT,
+    ".eml": SampleType.EMAIL,
+    ".msg": SampleType.EMAIL,
+    ".mbox": SampleType.EMAIL,
+    # 代码
+    ".py": SampleType.SCRIPT_PYTHON,
+    ".pyw": SampleType.SCRIPT_PYTHON,
+    ".class": SampleType.CODE_JAVA,
+    # 安装包/证书/字体
+    ".msi": SampleType.PACKAGE_MSI,
+    ".msp": SampleType.PACKAGE_MSI,
+    ".cer": SampleType.CERTIFICATE,
+    ".crt": SampleType.CERTIFICATE,
+    ".pem": SampleType.CERTIFICATE,
+    ".der": SampleType.CERTIFICATE,
+    ".pfx": SampleType.CERTIFICATE,
+    ".ttf": SampleType.FONT,
+    ".ttc": SampleType.FONT,
+    ".otf": SampleType.FONT,
+    ".fon": SampleType.FONT,
+    # 其它归档/镜像
+    ".cab": SampleType.ARCHIVE_CAB,
+    ".gz": SampleType.ARCHIVE_GZIP,
+    ".tgz": SampleType.ARCHIVE_GZIP,
+    ".tar": SampleType.ARCHIVE_TAR,
+    ".iso": SampleType.DISK_IMAGE,
+    ".img": SampleType.DISK_IMAGE,
+    ".vhd": SampleType.DISK_IMAGE,
+    ".vhdx": SampleType.DISK_IMAGE,
+    ".wim": SampleType.DISK_IMAGE,
+    ".vmdk": SampleType.DISK_IMAGE,
+    ".qcow2": SampleType.DISK_IMAGE,
 }
 
 
@@ -113,25 +170,47 @@ def _looks_text(data: bytes) -> bool:
 
 
 def guess_type(name: str, head: bytes = b"") -> SampleType:
-    """按魔术字节 -> 后缀 -> 文本判定的顺序猜测类型。"""
+    """按魔术字节 -> 后缀 -> 文本判定的顺序猜测类型（不执行）。"""
+    suffix = Path(name).suffix.lower()
     if head[:2] == b"MZ":
         kind = _pe_kind(head)
         if kind is not None:
             return kind
+        return SampleType.DATA  # 只有 MZ 但 PE 头不完整：按可疑数据对待
     if head[:4] == b"PK\x03\x04":
         return SampleType.ARCHIVE_ZIP
     if head[:4] == b"Rar!":
         return SampleType.ARCHIVE_RAR
     if head[:6] == b"7z\xbc\xaf\x27\x1c":
         return SampleType.ARCHIVE_7Z
+    if head[:4] == b"%PDF":
+        return SampleType.DOCUMENT_PDF
+    if head[:4] == b"\x7fELF":
+        return SampleType.ELF
+    if head[:4] == b"\xca\xfe\xba\xbe":
+        return SampleType.CODE_JAVA
+    if head[:4] == b"MSCF":
+        return SampleType.ARCHIVE_CAB
+    if head[:2] == b"\x1f\x8b":
+        return SampleType.ARCHIVE_GZIP
+    if head[257:262] == b"ustar":
+        return SampleType.ARCHIVE_TAR
+    if head[0x8001:0x8006] == b"CD001":
+        return SampleType.DISK_IMAGE
+    if head[:8] == b"L\x00\x00\x00\x01\x14\x02\x00":
+        return SampleType.SHORTCUT
     if head[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+        if suffix in (".msi", ".msp"):
+            return SampleType.PACKAGE_MSI
+        if suffix in _SUFFIX_TYPES and _SUFFIX_TYPES[suffix].value.startswith("office/"):
+            return _SUFFIX_TYPES[suffix]
         return SampleType.OFFICE_DOC
-    suffix = Path(name).suffix.lower()
     if suffix in _SUFFIX_TYPES:
         return _SUFFIX_TYPES[suffix]
     if _looks_text(head):
         return SampleType.TEXT
     return SampleType.UNKNOWN
+
 
 
 @dataclass

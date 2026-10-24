@@ -72,6 +72,7 @@ class PolicyConfig:
     max_events: int = 20000
     backend: str = "containment"
     follow_children: bool = True
+    registry_snapshot: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -83,6 +84,7 @@ class PolicyConfig:
             "max_events": self.max_events,
             "backend": self.backend,
             "follow_children": self.follow_children,
+            "registry_snapshot": self.registry_snapshot,
         }
 
     @classmethod
@@ -99,6 +101,7 @@ class PolicyConfig:
             max_events=int(data.get("max_events", 20000)),
             backend=str(data.get("backend", "containment")),
             follow_children=bool(data.get("follow_children", True)),
+            registry_snapshot=bool(data.get("registry_snapshot", True)),
         )
 
 
@@ -139,11 +142,15 @@ class ScoringConfig:
 
 
 def default_root() -> Path:
-    """仓库根目录；PyInstaller 冻结后是 exe 所在目录（规则/配置与 exe 同级）。"""
+    """仓库根目录；PyInstaller 冻结后向上找包含 rules/ 与 config/engine.json 的目录。"""
     import sys
 
     if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
+        exe_dir = Path(sys.executable).resolve().parent
+        for candidate in (exe_dir, exe_dir.parent, exe_dir.parent.parent):
+            if (candidate / "config" / "engine.json").is_file() and (candidate / "rules").is_dir():
+                return candidate
+        return exe_dir
     return Path(__file__).resolve().parents[2]
 
 
@@ -155,6 +162,7 @@ DEFAULT_POLICIES: dict[str, dict[str, Any]] = {
         "network": "blocked",
         "max_events": 5000,
         "backend": "replay",
+        "registry_snapshot": False,
     },
     "deep": {
         "timeout_s": 20,

@@ -646,12 +646,19 @@ class ContainmentBackend(BaseSandboxBackend):
             raise SandboxError("network=blocked 且无管理员权限：fail-closed，不执行样本")
 
         trace_id = new_trace_id()
+        t_begin = time.perf_counter()
+        timings: dict[str, float] = {}
+
+        def _mark(name: str) -> None:
+            timings[name] = round(time.perf_counter() - t_begin, 3)
+
         work_root = Path(policy.workdir_root).resolve() if policy.workdir_root else Config.default().paths.work
         work = work_root / trace_id / "c"
         work.mkdir(parents=True, exist_ok=True)
         source = Path(sample.path).resolve()
         sample_copy = work / source.name
         shutil.copy2(source, sample_copy)
+        _mark("workspace")
 
         builder = EventBuilder(max_events=policy.max_events, source="poll:process", on_event=on_event)
         notes: list[str] = []
@@ -707,15 +714,20 @@ class ContainmentBackend(BaseSandboxBackend):
                 notes.append(job.error or "Job Object 配置失败")
             if not job.handle:
                 notes.append(job.error or "Job Object 创建失败")
+            _mark("isolation")
 
             try:
                 before_files = snapshot.snapshot_tree(work)
             except OSError as exc:
                 notes.append(f"文件快照失败: {exc}")
-            try:
-                before_reg, reg_errors = snapshot.export_registry(snapshot.DEFAULT_REG_SUBTREES)
-            except Exception as exc:  # 注册表快照失败不致命
-                notes.append(f"注册表快照失败: {exc}")
+            if policy.registry_snapshot:
+                try:
+                    before_reg, reg_errors = snapshot.export_registry(snapshot.DEFAULT_REG_SUBTREES)
+                except Exception as exc:  # 注册表快照失败不致命
+                    notes.append(f"注册表快照失败: {exc}")
+            else:
+                notes.append("注册表快照已按策略跳过（registry_snapshot=false，提升扫描速度）")
+            _mark("snapshots_before")
 
             if self.use_etw:
                 try:
@@ -746,6 +758,7 @@ class ContainmentBackend(BaseSandboxBackend):
             # 独立守护线程：主等待之外的最后一道超时保险
             hard_kill = _HardKillTimer(root_pid, job, deadline_s=float(policy.timeout_s) + 5.0)
             hard_kill.start()
+            _mark("launch")
 
             root_entry = watchdog.list_processes().get(root_pid)
             root_name = root_entry.name if root_entry else Path(program).name
@@ -783,6 +796,7 @@ class ContainmentBackend(BaseSandboxBackend):
             result = watchdog.wait_process(launch.process_handle, policy.timeout_s, poll_s=0.2, on_tick=on_tick)
             terminated_by = "timeout" if result.reason == "timeout" else "exited"
             exit_code = result.exit_code
+            _mark("execute")
 
             # 收尾前的最后一次连接表采样（短命外联尽量抓到）
             for conn in net.poll(tracker.pids()):
@@ -808,6 +822,7 @@ class ContainmentBackend(BaseSandboxBackend):
                 source="poll:process",
                 confidence="high",
             )
+            _mark("terminate")
         except BaseException as exc:  # noqa: BLE001 - 所有异常都要先清理再抛出
             fatal = exc
         finally:
@@ -903,11 +918,13 @@ class ContainmentBackend(BaseSandboxBackend):
                     after_files = snapshot.snapshot_tree(work)
                 except OSError as exc:
                     notes.append(f"执行后文件快照失败: {exc}")
-                try:
-                    after_reg, after_errors = snapshot.export_registry(snapshot.DEFAULT_REG_SUBTREES)
-                    reg_errors.extend(after_errors)
-                except Exception as exc:  # noqa: BLE001
-                    notes.append(f"执行后注册表快照失败: {exc}")
+                if policy.registry_snapshot:
+                    try:
+                        after_reg, after_errors = snapshot.export_registry(snapshot.DEFAULT_REG_SUBTREES)
+                        reg_errors.extend(after_errors)
+                    except Exception as exc:  # noqa: BLE001
+                        notes.append(f"执行后注册表快照失败: {exc}")
+                _mark("cleanup")
 
         if fatal is not None:
             if self.cleanup_workdir and not self.keep_workdir:
@@ -918,6 +935,9 @@ class ContainmentBackend(BaseSandboxBackend):
             if isinstance(fatal, (SandboxError, SampleError, SandboxUnavailable)):
                 raise fatal
             raise SandboxError(f"containment 执行异常: {fatal}", reason="containment_exception") from fatal
+
+        timings["total"] = round(time.perf_counter() - t_begin, 3)
+        extra["timings"] = timings
 
         # ------------------------------------------------------------------
         # 观测后处理：文件 diff / 注册表 diff / 事件落地 / Trace 汇总

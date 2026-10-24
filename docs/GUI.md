@@ -46,6 +46,12 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 - zip 会展开逐条目静态分析（有安全上限，不执行条目）；
 - 离线回放：`tianti.trace/1` 轨迹 JSON；CAPE/capa 报告先用 `convert-cape` 转轨迹。
 
+## 扫描优化
+
+- **仅静态分析（不执行样本）**：勾选后完全跳过沙箱，只做静态预筛 + 规则/检测/评分；
+- **复用轨迹缓存**：默认开启，同一样本第二次扫描直接回放上次轨迹（不重复执行，实测 0.04s）；
+- 沙箱首次执行分阶段耗时见结果 JSON 的 `trace.extra.timings`。
+
 ## 已知限制
 
 - 只做单机本地分析，不含远程/多用户；

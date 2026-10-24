@@ -23,6 +23,10 @@
 ```powershell
 $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe"
 
+# 沙箱扫描优化：重复样本命中轨迹缓存（不重复执行），或只做静态分析
+& $PY -m tianti scan 样本.exe --static-only      # 不执行，纯静态
+& $PY -m tianti scan 样本.exe --no-cache         # 强制重新执行沙箱
+
 # 版本与环境自检（会显示 backends 可用性）
 & $PY -m tianti version --check
 
@@ -88,6 +92,14 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 | CAPE / capa 动态报告 JSON | 先 `convert-cape` 转轨迹，再按轨迹分析（可命中 api 级上游规则） |
 
 沙箱执行类型与 containment 启动器能力一致：遇到不能执行的文件不会尝试启动，而是自动回落到静态分析并在结果 notes 中标明。
+
+## 沙箱扫描优化
+
+- **轨迹缓存**：相同样本 sha256 + 策略命中上次沙箱轨迹，直接回放分析，不重复执行（默认开启，`--no-cache` 关闭）；
+- **静态模式**：`--static-only` 或 GUI「仅静态分析」完全跳过沙箱；
+- **fast 策略**跳过注册表快照，省约 0.24s；
+- **分阶段耗时**写入 `trace.extra.timings`；
+- 实测：首次沙箱 3.42s，缓存命中 0.04s（≈85×），静态模式 0.04s。
 
 ## 已知限制
 

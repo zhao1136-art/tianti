@@ -42,7 +42,7 @@ $guiArgs = @("-m", "PyInstaller", "--noconfirm", "--clean", "--windowed", "--one
 if ($LASTEXITCODE -ne 0) { throw "GUI 构建失败" }
 
 Write-Host "=== 构建 CLI（onefile, console）==="
-$cliArgs = @("-m", "PyInstaller", "--noconfirm", "--clean", "--console", "--onefile", "--name", "tianti",
+$cliArgs = @("-m", "PyInstaller", "--noconfirm", "--clean", "--console", "--onedir", "--name", "tianti",
     "--paths", $root, "--distpath", $dist, "--workpath", $build) + $hiddenArgs + @("packaging\cli_entry.py")
 & $venvPy $cliArgs
 if ($LASTEXITCODE -ne 0) { throw "CLI 构建失败" }
@@ -59,7 +59,13 @@ Copy-Item (Join-Path $root "docs\*") (Join-Path $pkg "docs") -Recurse -Force
 New-Item -ItemType Directory -Force -Path (Join-Path $pkg "tests\fixtures\traces") | Out-Null
 Copy-Item (Join-Path $root "tests\fixtures\traces\*.json") (Join-Path $pkg "tests\fixtures\traces") -Force
 
-Copy-Item (Join-Path $dist "tianti.exe") (Join-Path $pkg "tianti.exe") -Force
+Copy-Item (Join-Path $dist "tianti") (Join-Path $pkg "tianti") -Recurse -Force
+$cmdLines = @(
+    "@echo off",
+    'cd /d "%~dp0"',
+    '"%~dp0tianti\tianti.exe" %*'
+)
+Set-Content -Path (Join-Path $pkg "tianti.cmd") -Value $cmdLines -Encoding Default
 
 $batLines = @(
     "@echo off",

@@ -182,6 +182,10 @@ class TiantiApp:
         ).pack(side="left", padx=(0, 16))
         self.upstream_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(row2, text="加载上游 capa 规则（rules/upstream）", variable=self.upstream_var).pack(side="left")
+        self.static_only_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(row2, text="仅静态分析（不执行样本）", variable=self.static_only_var).pack(side="left", padx=(14, 0))
+        self.cache_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(row2, text="复用轨迹缓存", variable=self.cache_var).pack(side="left", padx=(10, 0))
 
         row3 = ttk.Frame(frame)
         row3.pack(fill="x", pady=(10, 0))
@@ -195,7 +199,7 @@ class TiantiApp:
         self.clear_button = ttk.Button(row3, text="清空结果", command=self.clear_results)
         self.clear_button.pack(side="left", padx=6)
         ttk.Label(
-            row3, text="提示：离线回放不会执行样本，适合反复调规则；沙箱执行受火绒 HIPS 监控可能弹窗。",
+            row3, text="提示：勾选「仅静态分析」不执行样本；沙箱执行受火绒 HIPS 监控可能弹窗；重复样本默认复用轨迹缓存。",
             foreground=COLORS["muted"],
         ).pack(side="left", padx=12)
 
@@ -457,7 +461,14 @@ class TiantiApp:
         self.status_var.set(f"准备扫描 {len(files)} 个文件…")
         thread = threading.Thread(
             target=self._worker,
-            args=(files, self.mode_var.get(), self.policy_var.get(), bool(self.upstream_var.get())),
+            args=(
+                files,
+                self.mode_var.get(),
+                self.policy_var.get(),
+                bool(self.upstream_var.get()),
+                bool(self.static_only_var.get()),
+                bool(self.cache_var.get()),
+            ),
             daemon=True,
         )
         thread.start()
@@ -476,7 +487,15 @@ class TiantiApp:
         files = sorted(path for path in target.rglob("*") if path.is_file())
         return files[:MAX_DIR_FILES]
 
-    def _worker(self, files: list[Path], mode: str, policy: str, include_upstream: bool) -> None:
+    def _worker(
+        self,
+        files: list[Path],
+        mode: str,
+        policy: str,
+        include_upstream: bool,
+        static_only: bool,
+        use_cache: bool,
+    ) -> None:
         for index, path in enumerate(files, start=1):
             if self.cancel_requested.is_set():
                 self.queue.put(("stopped", None))
@@ -492,7 +511,14 @@ class TiantiApp:
             self.queue.put(("status", status))
             try:
                 result = self._analyze_one(
-                    path, mode, policy, include_upstream, index=index, total=len(files)
+                    path,
+                    mode,
+                    policy,
+                    include_upstream,
+                    static_only=static_only,
+                    use_cache=use_cache,
+                    index=index,
+                    total=len(files),
                 )
                 self.queue.put(("row", result))
             except _Cancelled:
@@ -509,6 +535,8 @@ class TiantiApp:
         policy: str,
         include_upstream: bool,
         *,
+        static_only: bool = False,
+        use_cache: bool = True,
         index: int = 1,
         total: int = 1,
     ) -> ScanResult:
@@ -521,17 +549,38 @@ class TiantiApp:
             result.extra["input"] = "replay"
             result.extra["source_path"] = str(path)
             return result
-        return self._run_cli_scan(path, policy, include_upstream, index=index, total=total)
+        return self._run_cli_scan(
+            path,
+            policy,
+            include_upstream,
+            static_only=static_only,
+            use_cache=use_cache,
+            index=index,
+            total=total,
+        )
 
     def _run_cli_scan(
-        self, path: Path, policy: str, include_upstream: bool, *, index: int, total: int
+        self,
+        path: Path,
+        policy: str,
+        include_upstream: bool,
+        *,
+        static_only: bool = False,
+        use_cache: bool = True,
+        index: int,
+        total: int,
     ) -> ScanResult:
         """沙箱扫描放到子进程执行，便于「停止」时整棵进程树强杀。"""
         prefix = self._cli_command_prefix()
         if not prefix:
             # 冻结版缺少 tianti.exe 时退回进程内扫描（无法强杀，但至少能出结果）
             return pipeline.scan_path(
-                path, policy=policy, config=self.config, include_upstream=include_upstream
+                path,
+                policy=policy,
+                config=self.config,
+                include_upstream=include_upstream,
+                static_only=static_only,
+                use_cache=use_cache,
             )
         tmp = Path(tempfile.mkdtemp(prefix="tianti_gui_"))
         command = list(prefix) + [
@@ -540,6 +589,10 @@ class TiantiApp:
         ]
         if include_upstream:
             command.append("--include-upstream")
+        if static_only:
+            command.append("--static-only")
+        if not use_cache:
+            command.append("--no-cache")
         creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
         proc = subprocess.Popen(
             command,
@@ -579,8 +632,13 @@ class TiantiApp:
     def _cli_command_prefix(self) -> list[str]:
         """返回调用 CLI 的命令前缀；PyInstaller 冻结版用同目录 tianti.exe。"""
         if getattr(sys, "frozen", False):
-            cli = self.config.paths.root / "tianti.exe"
-            return [str(cli)] if cli.is_file() else []
+            for candidate in (
+                self.config.paths.root / "tianti" / "tianti.exe",
+                self.config.paths.root / "tianti.exe",
+            ):
+                if candidate.is_file():
+                    return [str(candidate)]
+            return []
         return [sys.executable, "-m", "tianti"]
 
     def _kill_process_tree(self, proc: "subprocess.Popen[str]") -> None:

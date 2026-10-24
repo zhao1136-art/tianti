@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib
 import inspect
 import json
@@ -47,7 +48,14 @@ MAX_ARCHIVE_ENTRIES = 100
 MAX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_FILE_BYTES = 32 * 1024 * 1024
 MAX_ARCHIVE_DEPTH = 2
-_ARCHIVE_TYPES = (SampleType.ARCHIVE_ZIP, SampleType.ARCHIVE_RAR, SampleType.ARCHIVE_7Z)
+_ARCHIVE_TYPES = (
+    SampleType.ARCHIVE_ZIP,
+    SampleType.ARCHIVE_RAR,
+    SampleType.ARCHIVE_7Z,
+    SampleType.ARCHIVE_CAB,
+    SampleType.ARCHIVE_GZIP,
+    SampleType.ARCHIVE_TAR,
+)
 # Office 容器本质是 zip，但必须走 office 宏分析而不是普通压缩包展开
 _OFFICE_CONTAINER_SUFFIXES = {
     ".docx", ".docm", ".dotx", ".dotm", ".xlsx", ".xlsm", ".xltx", ".xltm", ".xlsb",
@@ -988,6 +996,55 @@ def run_backend(
     )
 
 
+
+# --------------------------------------------------------------------- 轨迹缓存（优化重复扫描）
+def _trace_cache_enabled(config: Config) -> bool:
+    section = dict((config.extra or {}).get("sandbox") or {})
+    return bool(section.get("trace_cache", True))
+
+
+def _trace_cache_key(sample: Sample, config: Config, policy_name: str) -> str:
+    policy_cfg = config.policy(policy_name)
+    raw = "|".join(
+        [
+            __version__,
+            sample.sha256,
+            policy_name,
+            str(policy_cfg.timeout_s),
+            str(policy_cfg.max_events),
+            str(policy_cfg.network),
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def _trace_cache_path(config: Config, sample: Sample, policy_name: str) -> Path:
+    key = _trace_cache_key(sample, config, policy_name)
+    return config.paths.work / "trace_cache" / f"{sample.sha256[:20]}-{key}.json"
+
+
+def _load_cached_trace(path: Path, sample: Sample) -> Trace | None:
+    if not path.is_file():
+        return None
+    try:
+        trace = schema.load(path)
+    except TraceError:
+        return None
+    if trace.sample.sha256 != sample.sha256:
+        return None
+    trace.extra["cache_hit"] = True
+    trace.extra["cache_path"] = str(path)
+    return trace
+
+
+def _store_cached_trace(trace: Trace, path: Path) -> None:
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        schema.save(trace, path)
+    except OSError:
+        pass
+
+
 def scan_path(
     path: str | Path,
     *,
@@ -995,6 +1052,8 @@ def scan_path(
     config: Config | None = None,
     include_upstream: bool = False,
     expand_archives: bool = True,
+    static_only: bool = False,
+    use_cache: bool = True,
 ) -> ScanResult:
     """一条命令完成扫描：trace JSON -> 离线分析；其他文件 -> 静态 + 沙箱 + 分析。"""
     cfg = config or Config.load()
@@ -1019,6 +1078,21 @@ def scan_path(
 
     static_payload = run_static(target, config=cfg)
     sample = Sample.from_path(target)
+    if static_only:
+        trace = _static_only_trace(sample, policy=(policy or cfg.default_policy))
+        result = analyze_trace(trace, static=static_payload, config=cfg, include_upstream=include_upstream)
+        result.notes.insert(
+            0,
+            "已按静态模式跳过沙箱执行（不运行样本，结论仅基于静态信号/文件名/内容特征，置信度相应降低）。",
+        )
+        result.extra["input"] = "static-only"
+        result.extra["backend"] = {
+            "backend": "static",
+            "requested": policy or cfg.default_policy,
+            "fallback": False,
+            "attempts": [],
+        }
+        return result
     if (
         sample.type == SampleType.ARCHIVE_ZIP
         and expand_archives
@@ -1058,11 +1132,31 @@ def scan_path(
             "attempts": [],
         }
         return result
-    trace, backend_info = run_backend(target, policy_name=policy, config=cfg)
+    policy_name = policy or cfg.default_policy
+    cache_path: Path | None = None
+    cached: Trace | None = None
+    if use_cache and _trace_cache_enabled(cfg):
+        cache_path = _trace_cache_path(cfg, sample, policy_name)
+        cached = _load_cached_trace(cache_path, sample)
+    if cached is not None:
+        trace = cached
+        backend_info = {
+            "backend": "cache",
+            "requested": policy_name,
+            "policy": policy_name,
+            "fallback": False,
+            "attempts": [],
+        }
+    else:
+        trace, backend_info = run_backend(target, policy_name=policy, config=cfg)
+        if use_cache and _trace_cache_enabled(cfg) and cache_path is not None:
+            _store_cached_trace(trace, cache_path)
     trace.extra.setdefault("source_path", str(target))
     result = analyze_trace(trace, static=static_payload, config=cfg, include_upstream=include_upstream)
     result.extra["input"] = "sandbox"
     result.extra["backend"] = backend_info
+    if backend_info.get("backend") == "cache":
+        result.notes.insert(0, f"命中轨迹缓存（sha256={sample.sha256[:12]}…，未重复执行样本）。")
     if backend_info.get("fallback"):
         attempts = "；".join(backend_info.get("attempts") or [])
         result.notes.insert(
