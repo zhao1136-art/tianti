@@ -17,3 +17,4 @@ samples/**/*.obj
 .pytest_cache/
 .mypy_cache/
 .DS_Store
+docs/gui_probe.*
