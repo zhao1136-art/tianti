@@ -43,6 +43,8 @@ class RuleEngine:
         paths: Iterable[str | Path] | None = None,
         span_width: float = 10.0,
         strict: bool = True,
+        include_upstream: bool = False,
+        upstream_dir: str | Path | None = None,
     ) -> None:
         if paths is not None:
             selected: list[str | Path] = list(paths)
@@ -50,8 +52,28 @@ class RuleEngine:
             selected = [rules_dir]
         else:
             selected = default_rule_dirs()
+        self.include_upstream = bool(include_upstream)
+        self.upstream_dir = str(upstream_dir) if upstream_dir is not None else None
+        if include_upstream:
+            if upstream_dir is not None:
+                upstream = Path(upstream_dir)
+            elif rules_dir is not None:
+                upstream = Path(rules_dir) / "upstream"
+            else:
+                upstream = DEFAULT_RULES_DIR / "upstream"
+            if upstream.is_dir():
+                resolved_up = upstream.resolve()
+                covered = any(
+                    resolved_up == Path(str(item)).resolve()
+                    or resolved_up in Path(str(item)).resolve().parents
+                    for item in selected
+                )
+                if not covered:
+                    selected.append(upstream)
+            elif upstream_dir is not None:
+                raise RuleError(f"upstream 规则目录不存在: {upstream}", path=str(upstream))
         self.rules_dir = str(rules_dir) if rules_dir is not None else str(DEFAULT_RULES_DIR)
-        self.load: LoadResult = load_rulepack(selected)
+        self.load: LoadResult = load_rulepack(selected, include_upstream=include_upstream)
         self.ruleset = self.load.rule_set
         self.lint = self.load.lint
         if strict and not self.lint.ok:
@@ -90,6 +112,9 @@ class RuleEngine:
         return {
             "rules": len(self.ruleset.rules),
             "files": len(self.load.files),
+            "include_upstream": self.include_upstream,
+            "upstream_rules": int(self.lint.stats.get("upstream_rules") or 0),
+            "scopes": dict(self.lint.stats.get("scopes") or {}),
             "namespaces": sorted({rule.meta.namespace for rule in self.ruleset.rules}),
             "unsupported": list(self.ruleset.unsupported),
             "lint": self.lint.to_dict(),
@@ -100,12 +125,19 @@ class RuleEngine:
         return len(self.ruleset.rules)
 
 
-def _cache_key(rules_dir: str | Path | None, span_width: float, strict: bool) -> tuple[str, float, bool]:
+def _cache_key(
+    rules_dir: str | Path | None,
+    span_width: float,
+    strict: bool,
+    include_upstream: bool = False,
+    upstream_dir: str | Path | None = None,
+) -> tuple:
     if rules_dir is None:
         resolved = str(DEFAULT_RULES_DIR.resolve())
     else:
         resolved = str(Path(rules_dir).resolve())
-    return (resolved, float(span_width), bool(strict))
+    upstream = str(Path(upstream_dir).resolve()) if upstream_dir is not None else ""
+    return (resolved, float(span_width), bool(strict), bool(include_upstream), upstream)
 
 
 def match_trace(
@@ -114,13 +146,21 @@ def match_trace(
     *,
     span_width: float = 10.0,
     strict: bool = True,
+    include_upstream: bool = False,
+    upstream_dir: str | Path | None = None,
 ) -> list[RuleMatch]:
     """模块级便捷入口：内部缓存 RuleEngine，供 CLI/API/检测层直接调用。"""
-    key = _cache_key(rules_dir, span_width, strict)
+    key = _cache_key(rules_dir, span_width, strict, include_upstream, upstream_dir)
     with _ENGINE_LOCK:
         engine = _ENGINE_CACHE.get(key)
         if engine is None:
-            engine = RuleEngine(rules_dir, span_width=span_width, strict=strict)
+            engine = RuleEngine(
+                rules_dir,
+                span_width=span_width,
+                strict=strict,
+                include_upstream=include_upstream,
+                upstream_dir=upstream_dir,
+            )
             _ENGINE_CACHE[key] = engine
     return engine.match(trace)
 

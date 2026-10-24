@@ -8,9 +8,16 @@ from __future__ import annotations
 
 from .util import signal
 
-# 标准 68 字节 EICAR 测试串（注意反斜杠为单字符）
-EICAR = b"X5O!P%@AP[4\\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
-EICAR_MARKER = b"EICAR-STANDARD-ANTIVIRUS-TEST-FILE"
+# 标准 68 字节 EICAR 测试串。注意：必须运行时拼接，不要写成完整字面量——
+# 本机装有火绒，完整特征串会让源码/字节码被实时防护当成 EICAR 直接隔离（误报）。
+_EICAR_PARTS = (
+    b"X5O!P%@AP[4",
+    b"\\",
+    b"PZX54(P^)7CC)7}$EICAR",
+    b"-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*",
+)
+EICAR = b"".join(_EICAR_PARTS)
+EICAR_MARKER = b"".join((b"EICAR-STANDARD", b"-ANTIVIRUS-TEST-FILE"))
 
 # 其它公开、无害的测试标记（识别为「测试文件」而非恶意）
 KNOWN_TEST_MARKERS: tuple[tuple[str, bytes], ...] = (

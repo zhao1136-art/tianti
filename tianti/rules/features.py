@@ -289,6 +289,9 @@ class FeatureIndex:
     numbers: dict[str, list[float]] = field(default_factory=dict)
     nets: dict[str, dict[str, Any]] = field(default_factory=dict)
     _all_ids: frozenset[str] = frozenset()
+    _blob_cache: dict[tuple, str] = field(default_factory=dict)
+    _text_candidates_cache: dict[tuple, tuple[str, ...]] = field(default_factory=dict)
+    _number_candidates_cache: dict[tuple, tuple[str, ...]] = field(default_factory=dict)
 
     # ------------------------------------------------------------------ 构建
     @classmethod
@@ -403,7 +406,32 @@ class FeatureIndex:
         kind = node.kind
         action = node.action
         value = node.value
-        if kind in ("string", "number", "target"):
+        # call 等小实例（单事件）直接逐事件判断，避免拿全局候选集做 O(全部事件) 过滤
+        if ordered_ids is not None and len(ordered_ids) <= 8:
+            return [event_id for event_id in ordered_ids if self._event_matches(node, event_id)]
+        if kind in ("string", "substring"):
+            base = ordered_ids if ordered_ids is not None else self._ordered_ids(allowed_ids)
+            key = (len(base), base[0] if base else "", base[-1] if base else "")
+            candidates = self._text_candidates_cache.get(key)
+            if candidates is None:
+                candidates = tuple(
+                    event_id
+                    for event_id in base
+                    if self.by_id[event_id].category in _TEXT_CATEGORIES
+                )
+                self._text_candidates_cache[key] = candidates
+        elif kind == "number":
+            base = ordered_ids if ordered_ids is not None else self._ordered_ids(allowed_ids)
+            key = (len(base), base[0] if base else "", base[-1] if base else "")
+            candidates = self._number_candidates_cache.get(key)
+            if candidates is None:
+                candidates = tuple(
+                    event_id
+                    for event_id in base
+                    if self.by_id[event_id].category in _NUMBER_CATEGORIES
+                )
+                self._number_candidates_cache[key] = candidates
+        elif kind == "target":
             candidates = ordered_ids if ordered_ids is not None else self._ordered_ids(allowed_ids)
         try:
             if kind == "api":
@@ -422,6 +450,8 @@ class FeatureIndex:
                 return self._match_generic(kind, action, value, allowed_ids)
             if kind == "string":
                 return self._match_strings(value, candidates)
+            if kind == "substring":
+                return self._match_substrings(value, candidates)
             if kind == "number":
                 return self._match_numbers(value, candidates)
             if kind == "target":
@@ -430,6 +460,90 @@ class FeatureIndex:
             raise
         except Exception as exc:  # pragma: no cover - 防御性
             raise RuleError(f"特征求值失败 {node.label!r}: {exc}", rule=node.label) from exc
+        raise RuleError(f"未知特征类型: {kind!r}")
+
+    def _event_matches(self, node: FeatureNode, event_id: str) -> bool:
+        """单事件特征判定：用于 call/thread 等小实例，避免全局候选扫描。"""
+        event = self.by_id[event_id]
+        category = event.category
+        act = event.action
+        kind = node.kind
+        action = node.action
+        value = node.value
+        normalized = self.normalized_targets[event_id]
+        if kind == "api":
+            if category != "api" or act != "call":
+                return False
+            if value is None:
+                return True
+            api_name = str(event.args.get("api") or "").lower()
+            values = value if isinstance(value, list) else [value]
+            return any(match_glob(str(item).lower(), api_name) for item in values)
+        if kind in ("file", "registry", "process", "image"):
+            wanted_action = action
+            if kind == "process":
+                wanted_action = "create"
+            elif kind == "image":
+                wanted_action = "load"
+            if category != kind:
+                return False
+            if wanted_action and act != wanted_action:
+                return False
+            if node.entropy_min is not None:
+                entropy = event.args.get("entropy")
+                if not (isinstance(entropy, (int, float)) and float(entropy) >= node.entropy_min):
+                    return False
+            return _target_matches_norm(kind, value, normalized)
+        if kind == "network":
+            if category != "network":
+                return False
+            info = self.nets[event_id]
+            if action in ("ip", "port", "host"):
+                field = info[action]
+                if field is None:
+                    return value is None
+                if value is None:
+                    return True
+                values = value if isinstance(value, list) else [value]
+                for item in values:
+                    if action == "port":
+                        if int(item) == int(field):
+                            return True
+                    elif match_glob(str(item).lower(), str(field)):
+                        return True
+                return False
+            if action and act != action:
+                return False
+            if value is None:
+                return True
+            values = value if isinstance(value, list) else [value]
+            return any(
+                match_glob(_pattern_text("network", str(item)), normalized) for item in values
+            )
+        if kind in ("memory", "thread", "security", "service", "scheduled_task", "token"):
+            if category != kind:
+                return False
+            if action and act != action:
+                return False
+            if value is None:
+                return True
+            values = value if isinstance(value, list) else [value]
+            return any(
+                match_glob(_pattern_text(kind, str(item)), normalized) for item in values
+            )
+        if kind == "string":
+            return self._string_matches_event(value, event_id)
+        if kind == "substring":
+            blob = self.text_blob_lower[event_id]
+            values = value if isinstance(value, list) else ([value] if value is not None else [])
+            return any(str(item).lower() in blob for item in values)
+        if kind == "number":
+            return match_numbers(value, self.numbers[event_id])
+        if kind == "target":
+            values = value if isinstance(value, list) else [value]
+            return any(match_glob(_pattern_text("target", str(item)), normalized) for item in values)
+        if kind == "os":
+            return True
         raise RuleError(f"未知特征类型: {kind!r}")
 
     # -- 各类型实现 --------------------------------------------------------
@@ -543,6 +657,36 @@ class FeatureIndex:
                 out.append(eid)
         return out
 
+    def _string_matches_event(self, value: Any, event_id: str) -> bool:
+        """单事件 string 匹配：锚定正则逐字符串校验，其余走事件合并 blob。"""
+        patterns = value if isinstance(value, list) else [value]
+        blob = self.text_blob[event_id]
+        for pattern in patterns:
+            if isinstance(pattern, RegexPattern):
+                source = pattern.source
+                if source.startswith("^") or source.endswith("$"):
+                    if any(match_string(pattern, text) for text in self.strings[event_id]):
+                        return True
+                    continue
+            if match_string(pattern, blob):
+                return True
+        return False
+
+    def _instance_blob(self, candidates: tuple[str, ...], *, lower: bool) -> str:
+        key = (
+            len(candidates),
+            candidates[0] if candidates else "",
+            candidates[-1] if candidates else "",
+            lower,
+        )
+        cached = self._blob_cache.get(key)
+        if cached is not None:
+            return cached
+        source = self.text_blob_lower if lower else self.text_blob
+        blob = "\x01".join(source[event_id] for event_id in candidates)
+        self._blob_cache[key] = blob
+        return blob
+
     def _match_strings(self, value: Any, candidates: tuple[str, ...]) -> list[str]:
         if value is None:
             return []
@@ -564,6 +708,18 @@ class FeatureIndex:
                 blob_needles.append(pattern.lower())
             else:
                 per_string_patterns.append(pattern)
+        # 先用实例合并 blob 做一次「快速否定」：整条规则的特征不可能命中时直接返回，
+        # 避免 span/file scope 下每条规则都逐事件扫描上万 blob（绝大多数规则在此被剪枝）。
+        if blob_needles:
+            combined_lower = self._instance_blob(candidates, lower=True)
+            blob_needles = [needle for needle in blob_needles if needle in combined_lower]
+        if blob_regexes:
+            combined = self._instance_blob(candidates, lower=False)
+            blob_regexes = [
+                pattern for pattern in blob_regexes if pattern.compile().search(combined)
+            ]
+        if not blob_needles and not blob_regexes and not per_string_patterns:
+            return []
         out: list[str] = []
         blobs = self.text_blob
         lower_blobs = self.text_blob_lower
@@ -594,6 +750,28 @@ class FeatureIndex:
                 out.append(event_id)
         return out
 
+    def _match_substrings(self, value: Any, candidates: tuple[str, ...]) -> list[str]:
+        """官方 capa substring 特征：事件文本子串匹配（大小写不敏感，近似实现）。"""
+        if value is None:
+            return []
+        needles = value if isinstance(value, list) else [value]
+        lowered = [str(item).lower() for item in needles]
+        lower_blobs = self.text_blob_lower
+        if not candidates:
+            return []
+        combined = self._instance_blob(candidates, lower=True)
+        active = [needle for needle in lowered if needle in combined]
+        if not active:
+            return []
+        out: list[str] = []
+        for event_id in candidates:
+            blob = lower_blobs[event_id]
+            for needle in active:
+                if needle in blob:
+                    out.append(event_id)
+                    break
+        return out
+
     def _match_numbers(self, value: Any, candidates: tuple[str, ...]) -> list[str]:
         if value is None:
             return []
@@ -618,6 +796,11 @@ class FeatureIndex:
 
 
 _PATH_KINDS = ("file", "process", "image")
+# string/substring 特征只扫描可能携带文本参数的事件类别（动态 capa 中主要是 API 参数，
+# 本引擎额外支持进程命令行与网络 target），显著降低 span/file scope 的线性扫描量。
+_TEXT_CATEGORIES = frozenset({"api", "process", "network", "memory"})
+# number 特征主要对应 API 参数数值（外加内存保护标志）
+_NUMBER_CATEGORIES = frozenset({"api", "memory"})
 
 
 def _normalize_target(category: str, target: Any) -> str:

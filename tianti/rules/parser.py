@@ -30,6 +30,7 @@ __all__ = [
     "NotNode",
     "OptionalNode",
     "CountNode",
+    "AtLeastNode",
     "MatchNode",
     "SubscopeNode",
     "UnsupportedFeature",
@@ -112,6 +113,15 @@ class CountNode:
     minimum: int = 1
     maximum: int | None = None
     label: str = "count"
+
+
+@dataclass
+class AtLeastNode:
+    """capa "N or more" 节点：子特征中至少 minimum 个命中。"""
+
+    children: list[Any] = field(default_factory=list)
+    minimum: int = 1
+    label: str = "at least"
 
 
 @dataclass
@@ -223,8 +233,11 @@ _FEATURE_TABLE: dict[str, tuple[str, str | None]] = {
     # 通用
     "api": ("api", "call"),
     "string": ("string", None),
+    "substring": ("substring", None),
     "number": ("number", None),
     "target": ("target", None),
+    # 平台约束：本引擎只跑 Windows 沙箱，os: windows 恒真；其余 os 视为不支持
+    "os": ("os", None),
 }
 
 _ENTROPY_KEYS: dict[str, tuple[str, str | None]] = {
@@ -259,14 +272,62 @@ _UNSUPPORTED_KEYS = {
     "section characteristic",
     "entropy",
     "matcher",
-    "os",
     "arch",
     "format",
     "call",
     "static string",
-    "substring",
     "regex",
 }
+
+# 官方 capa 静态特征前缀（含 "property/read"、"operand[1].number"、"com/class" 等）
+_UNSUPPORTED_PREFIXES = (
+    "characteristic",
+    "operand",
+    "property",
+    "offset",
+    "mnemonic",
+    "basic block",
+    "instruction",
+    "export",
+    "import",
+    "section",
+    "function",
+    "function name",
+    "function name",
+    "class",
+    "com",
+    "namespace",
+    "bytes",
+    "arch",
+    "format",
+    "call",
+    "matcher",
+    "number of sections",
+    "section characteristic",
+    "entropy",
+    "static string",
+    "regex",
+)
+
+# 官方 capa-rules（新格式）meta.scopes.dynamic -> 本引擎 scope
+DYNAMIC_SCOPE_MAP: dict[str, str | None] = {
+    "span of calls": "span",
+    "span": "span",
+    "call": "call",
+    "process": "process",
+    "file": "file",
+    "thread": "thread",
+    "unsupported": None,
+}
+
+
+def _looks_unsupported(key: str) -> bool:
+    for prefix in _UNSUPPORTED_PREFIXES:
+        if key == prefix or key.startswith(prefix + "/") or key.startswith(prefix + "."):
+            return True
+        if key.startswith(prefix + "(") or key.startswith(prefix + "["):
+            return True
+    return False
 
 _STR_FLAG_MAP = {"i": re.IGNORECASE, "m": re.MULTILINE, "s": re.DOTALL}
 
@@ -302,6 +363,7 @@ class RuleParser:
 
     def __init__(self, *, path: str = "") -> None:
         self.path = path
+        self._original_scope: str = ""
 
     # ------------------------------------------------------------------ 入口
     def parse_payload(self, payload: Any) -> Rule:
@@ -322,7 +384,10 @@ class RuleParser:
                 rule=meta.name,
             )
         features = [self._parse_feature(item) for item in features_payload]
-        return Rule(meta=meta, features=features, source_path=self.path)
+        rule = Rule(meta=meta, features=features, source_path=self.path)
+        # 不改 base.py 契约：用 Rule 的动态属性保留上游原始 scope（旧格式即 meta.scope）
+        rule.original_scope = self._original_scope or meta.scope
+        return rule
 
     def parse_text(self, text: str) -> Rule:
         try:
@@ -341,14 +406,14 @@ class RuleParser:
         name = name.strip()
         namespace = meta.get("namespace")
         if not isinstance(namespace, str) or not namespace.strip():
-            raise RuleError(f"规则 {name!r} 缺少非空 meta.namespace", path=self.path, rule=name)
-        scope = str(meta.get("scope", "process")).strip().lower()
-        if scope not in SCOPES:
-            raise RuleError(
-                f"规则 {name!r} 的 scope 非法: {scope!r}（可选 {', '.join(SCOPES)}）",
-                path=self.path,
-                rule=name,
-            )
+            # 官方 capa-rules 的 lib/ 与部分 nursery 规则没有 namespace，按来源路径推导
+            namespace = self._derive_namespace(meta)
+            if not namespace:
+                raise RuleError(
+                    f"规则 {name!r} 缺少非空 meta.namespace", path=self.path, rule=name
+                )
+        scope, original_scope = self._parse_scope(meta, name)
+        self._original_scope = original_scope
         attack = _as_str_list(meta.get("att&ck", meta.get("attack")))
         for entry in attack:
             if not ATTACK_RE.match(entry):
@@ -359,7 +424,7 @@ class RuleParser:
                 )
         return RuleMeta(
             name=name,
-            namespace=namespace.strip(),
+            namespace=str(namespace).strip(),
             scope=scope,
             authors=_as_str_list(meta.get("authors")),
             description=str(meta.get("description") or ""),
@@ -369,22 +434,74 @@ class RuleParser:
             source_path=self.path,
         )
 
+    def _derive_namespace(self, meta: dict[str, Any]) -> str:
+        """上游 lib/ 规则无 namespace：meta.lib=true -> lib，其余按来源目录推导。"""
+        if meta.get("lib") is True:
+            return "lib"
+        if not self.path:
+            return ""
+        parent = Path(self.path).parent.name
+        if parent and parent not in ("rules", "upstream"):
+            return f"upstream/{parent.lower()}"
+        return "upstream"
+
+    def _parse_scope(self, meta: dict[str, Any], name: str) -> tuple[str, str]:
+        """兼容官方新格式 meta.scopes.{static,dynamic} 与旧格式 meta.scope。"""
+        scopes_payload = meta.get("scopes")
+        if isinstance(scopes_payload, dict):
+            dynamic = scopes_payload.get("dynamic")
+            if isinstance(dynamic, dict):
+                dynamic = dynamic.get("name") or dynamic.get("type") or ""
+            raw = str(dynamic or "").strip()
+            if not raw:
+                raise UnsupportedFeature(
+                    f"规则 {name!r} 只有 static scope（无 dynamic），跳过", path=self.path
+                )
+            mapped = DYNAMIC_SCOPE_MAP.get(raw.lower())
+            if mapped is None:
+                raise UnsupportedFeature(
+                    f"规则 {name!r} 的 dynamic scope 不支持: {raw!r}", path=self.path
+                )
+            return mapped, raw
+        raw = str(meta.get("scope", "process")).strip().lower()
+        if raw not in SCOPES:
+            raise RuleError(
+                f"规则 {name!r} 的 scope 非法: {raw!r}（可选 {', '.join(SCOPES)}）",
+                path=self.path,
+                rule=name,
+            )
+        return raw, raw
+
     # ------------------------------------------------------------------ 逻辑节点
     def _parse_feature(self, item: Any) -> Any:
         # 便捷写法：list 中直接写 "- create service" 等价于 {create service: None}
         if isinstance(item, str):
-            key = _normalize_key(item)
+            raw = item.strip()
+            key = _normalize_key(raw)
+            # 官方 capa 的 "- api(kernel32.Func)" / "- match(rule name)" 裸写法
+            if key.startswith("api(") and key.endswith(")"):
+                name = self._parse_api_args(raw)
+                return FeatureNode(kind="api", action="call", value=name, label=f"api: {name}")
+            if key.startswith("match(") and key.endswith(")"):
+                target = raw[raw.index("(") + 1 : raw.rindex(")")].strip()
+                if not target:
+                    raise RuleError("match(...) 规则引用必须给出规则名", path=self.path)
+                return MatchNode(rule_name=target, label=f"match: {target}")
             if key in ("and", "or", "not", "optional", "match", "subscope") or key.startswith("count("):
                 raise RuleError(f"逻辑节点 {item!r} 必须写成 mapping 形式", path=self.path)
             return self._parse_feature_key(item, key, None)
         if not isinstance(item, dict):
             raise RuleError(f"特征节点必须是 mapping，实际 {type(item).__name__}", path=self.path)
-        if len(item) != 1:
+        # 官方 capa 允许在特征节点内附 description 说明，忽略它而不是报错
+        cleaned = {k: v for k, v in item.items() if _normalize_key(k) != "description"}
+        if not cleaned:
+            raise UnsupportedFeature("特征节点只有 description 注释，无法求值", path=self.path)
+        if len(cleaned) != 1:
             raise RuleError(
-                f"特征节点必须恰好包含一个键，实际 {list(item.keys())!r}",
+                f"特征节点必须恰好包含一个键，实际 {list(cleaned.keys())!r}",
                 path=self.path,
             )
-        original_key, value = next(iter(item.items()))
+        original_key, value = next(iter(cleaned.items()))
         key = _normalize_key(original_key)
 
         if key in ("and", "or", "optional"):
@@ -396,10 +513,25 @@ class RuleParser:
             return NotNode(children=children, label=f"not({len(children)})")
         if key.startswith("count(") and key.endswith(")"):
             return self._parse_count(original_key, key, value)
+        # 官方 capa 的 "N or more:" 节点（例如 "- 3 or more: [feature, ...]"）
+        at_least = re.fullmatch(r"(?:at\s+least\s+)?(\d+)\s+or\s+more", key)
+        if at_least:
+            children = self._parse_children(value, key)
+            return AtLeastNode(
+                children=children,
+                minimum=int(at_least.group(1)),
+                label=f"{original_key}: {len(children)} 个中至少 {at_least.group(1)} 个",
+            )
         if key == "match":
             target = str(value or "").strip()
             if not target:
                 raise RuleError("match 规则引用必须给出规则名", path=self.path)
+            return MatchNode(rule_name=target, label=f"match: {target}")
+        # 官方 capa 也允许 "- match(rule name)" 形式
+        if key.startswith("match(") and key.endswith(")"):
+            target = str(original_key)[str(original_key).index("(") + 1 : str(original_key).rindex(")")].strip()
+            if not target:
+                raise RuleError("match(...) 规则引用必须给出规则名", path=self.path)
             return MatchNode(rule_name=target, label=f"match: {target}")
         if key == "subscope":
             return self._parse_subscope(value)
@@ -410,9 +542,21 @@ class RuleParser:
 
     def _parse_children(self, value: Any, label: str) -> list[Any]:
         if isinstance(value, list):
-            if not value:
-                raise RuleError(f"{label} 的子特征列表不能为空", path=self.path)
-            return [self._parse_feature(child) for child in value]
+            # 官方 capa 在逻辑节点里用 "- description: ..." 作为纯注释子节点，解析时忽略
+            items = [
+                child
+                for child in value
+                if not (
+                    isinstance(child, dict)
+                    and child
+                    and all(_normalize_key(key) == "description" for key in child)
+                )
+            ]
+            if not items:
+                raise UnsupportedFeature(
+                    f"{label} 的子特征只有 description 注释", path=self.path
+                )
+            return [self._parse_feature(child) for child in items]
         if isinstance(value, dict):
             return [self._parse_feature(value)]
         raise RuleError(f"{label} 需要 mapping 列表作为子特征", path=self.path)
@@ -476,13 +620,48 @@ class RuleParser:
         if normalized.startswith("api(") and normalized.endswith(")"):
             name = self._parse_api_args(key_part)
             return FeatureNode(kind="api", action="call", value=name, label=f"api: {name}")
+        if normalized.startswith("match(") and normalized.endswith(")"):
+            inner = key_part[key_part.index("(") + 1 : key_part.rindex(")")].strip()
+            if not inner:
+                raise RuleError("count(match(...)) 缺少规则名", path=self.path)
+            return MatchNode(rule_name=inner, label=f"match: {inner}")
+        # count(number(2)) / count(string("x")) 形式
+        inline = re.fullmatch(r"(number|string)\s*\((.*)\)", key_part.strip(), re.IGNORECASE | re.DOTALL)
+        if inline:
+            kind = inline.group(1).lower()
+            arg = inline.group(2).strip()
+            if len(arg) >= 2 and arg[0] == arg[-1] and arg[0] in "\"'":
+                arg = arg[1:-1]
+            if kind == "number":
+                return FeatureNode(
+                    kind="number", value=self._number_value(arg, key_part), label=f"number: {arg}"
+                )
+            return FeatureNode(
+                kind="string", value=self._string_pattern(arg, key_part), label=f"string: {arg}"
+            )
+        # 其他内联形式（mnemonic(...)/characteristic(...)/property(...)/offset(...) 等）均不支持
+        if re.match(r"^[a-z][a-z0-9 /_-]*\(", normalized):
+            raise UnsupportedFeature(f"count 内联特征不支持: {key_part!r}", path=self.path)
         return self._parse_feature_key(key_part, normalized, value_part)
 
     def _parse_api_args(self, key_text: str) -> str:
-        match = re.search(r"""name\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s,)]+))""", key_text, re.IGNORECASE)
-        if not match:
-            raise RuleError(f"api(...) 缺少 name= 参数: {key_text!r}", path=self.path)
-        return (match.group(1) or match.group(2) or match.group(3)).strip()
+        text = str(key_text).strip()
+        match = re.search(r"""name\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s,)]+))""", text, re.IGNORECASE)
+        if match:
+            return (match.group(1) or match.group(2) or match.group(3)).strip()
+        # api(kernel32.GetTickCount) / api(GetForegroundWindow)：无 name= 时取 function 名
+        if "(" not in text or ")" not in text:
+            raise RuleError(f"api(...) 语法非法: {key_text!r}", path=self.path)
+        inner = text[text.index("(") + 1 : text.rindex(")")].strip()
+        candidate = inner.split(",")[0].strip()
+        if not candidate or candidate.lower() == "call":
+            raise RuleError(f"api(...) 缺少函数名: {key_text!r}", path=self.path)
+        if "." in candidate:
+            candidate = candidate.rsplit(".", 1)[1]
+        candidate = candidate.strip("\"' ")
+        if not candidate:
+            raise RuleError(f"api(...) 缺少函数名: {key_text!r}", path=self.path)
+        return candidate
 
     # ------------------------------------------------------------------ 叶子特征
     def _parse_feature_key(self, original_key: str, key: str, value: Any) -> FeatureNode:
@@ -492,13 +671,21 @@ class RuleParser:
             entropy_min = 7.0
         elif key in _FEATURE_TABLE:
             kind, action = _FEATURE_TABLE[key]
-        elif key in _UNSUPPORTED_KEYS:
+        elif key in _UNSUPPORTED_KEYS or _looks_unsupported(key):
             raise UnsupportedFeature(
                 f"不支持的特征: {str(original_key).strip()!r}", path=self.path
             )
         else:
             raise UnsupportedFeature(
                 f"未知特征: {str(original_key).strip()!r}", path=self.path
+            )
+        if kind == "os":
+            raw_values = value if isinstance(value, list) else [value]
+            names = {str(item).strip().lower() for item in raw_values if item is not None}
+            if names and names <= {"windows"}:
+                return FeatureNode(kind="os", value="windows", label=str(original_key).strip())
+            raise UnsupportedFeature(
+                f"不支持的 os 约束（本引擎仅 Windows 沙箱）: {value!r}", path=self.path
             )
         converted = self._convert_value(kind, action, value, original_key)
         rendered = self._render_value(converted)
@@ -542,10 +729,11 @@ class RuleParser:
             last = text.rfind("/")
             body = text[1:last]
             flags_text = text[last + 1 :].strip()
+            # 例如 "/etc/passwd-s3fs" 只是普通字符串而非 /regex/flags，按字面量处理
+            if flags_text and any(char not in _STR_FLAG_MAP for char in flags_text):
+                return text
             flags = 0
             for char in flags_text:
-                if char not in _STR_FLAG_MAP:
-                    raise RuleError(f"{label} 的正则标志非法: {text!r}", path=self.path)
                 flags |= _STR_FLAG_MAP[char]
             try:
                 re.compile(body, flags)
@@ -562,6 +750,10 @@ class RuleParser:
         if isinstance(item, float):
             return item
         text = str(item).strip()
+        # 官方 capa 写法：number: 0x20007 = PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY
+        # 只取 "=" 之前的数值部分；符号说明仅用于可读性
+        if "=" in text:
+            text = text.split("=", 1)[0].strip()
         try:
             return int(text, 0)
         except ValueError:

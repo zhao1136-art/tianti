@@ -20,9 +20,8 @@ from tianti.static import strings as strings_mod
 FILE_ALIGN = 0x200
 SECTION_ALIGN = 0x1000
 
-EICAR = (
-    b"X5O!P%@AP[4" + b"\\" + b"PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"
-)
+# EICAR 统一从 tianti.static.known 取（那里是运行时拼接，避免被火绒误隔离）
+from tianti.static.known import EICAR  # noqa: E402
 
 
 def _import_section(dll: str, functions: list[str]) -> bytes:

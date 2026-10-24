@@ -223,7 +223,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
     cfg = Config.load()
     trace = schema.load(args.trace)
-    result = pipeline.analyze_trace(trace, config=cfg)
+    result = pipeline.analyze_trace(trace, config=cfg, include_upstream=args.include_upstream)
     if args.format == "json":
         text = jsonr.dumps(result)
         if args.out:
@@ -268,11 +268,12 @@ def _scan_one(
     fmt: str,
     cfg: Config,
     stem_override: str | None = None,
+    include_upstream: bool = False,
 ) -> list[Path]:
     from .api import pipeline
     from .report import html, jsonr
 
-    result = pipeline.scan_path(path, policy=policy, config=cfg)
+    result = pipeline.scan_path(path, policy=policy, config=cfg, include_upstream=include_upstream)
     common = stem_override or _result_common_name(jsonr.result_filename(result.sample_name))
     written: list[Path] = []
     if fmt in ("json", "both"):
@@ -316,6 +317,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
                     fmt=args.format,
                     cfg=cfg,
                     stem_override=stem_override,
+                    include_upstream=args.include_upstream,
                 )
             except TiantiError as exc:
                 failed += 1
@@ -328,7 +330,14 @@ def cmd_scan(args: argparse.Namespace) -> int:
             return EXIT_ERROR
         return EXIT_OK
     out_dir.mkdir(parents=True, exist_ok=True)
-    _scan_one(target, policy=args.policy, out_dir=out_dir, fmt=args.format, cfg=cfg)
+    _scan_one(
+        target,
+        policy=args.policy,
+        out_dir=out_dir,
+        fmt=args.format,
+        cfg=cfg,
+        include_upstream=args.include_upstream,
+    )
     return EXIT_OK
 
 
@@ -337,6 +346,12 @@ def _print_pack_info(info: dict[str, Any], label: str) -> None:
     if info.get("available"):
         print(f"{label}引擎: {info.get('engine') or '已接通'}")
         print(f"数量: {info.get('count', 0)}")
+        upstream = info.get("upstream")
+        if isinstance(upstream, dict) and upstream.get("requested"):
+            if upstream.get("available"):
+                print(f"上游规则: 已加载 {upstream.get('files', 0)} 个文件（{upstream.get('path')}）")
+            else:
+                print(f"上游规则: 未就绪（{upstream.get('reason') or upstream.get('path')}）")
         for name in info.get("rules") or info.get("detectors") or []:
             if name:
                 print(f"  - {name}")
@@ -365,14 +380,14 @@ def cmd_rules(args: argparse.Namespace) -> int:
 
     cfg = Config.load()
     if args.action == "list":
-        info = pipeline.describe_rules(cfg)
+        info = pipeline.describe_rules(cfg, include_upstream=args.include_upstream)
         if args.json:
             print(json.dumps(info, ensure_ascii=False, indent=2))
         else:
             _print_pack_info(info, "规则")
         return EXIT_OK
     if args.action == "validate":
-        ok, info = pipeline.validate_rules(cfg)
+        ok, info = pipeline.validate_rules(cfg, include_upstream=args.include_upstream)
         if args.json:
             print(json.dumps(info, ensure_ascii=False, indent=2))
         else:
@@ -381,6 +396,13 @@ def cmd_rules(args: argparse.Namespace) -> int:
             _fail(str(info.get("reason") or "规则引擎不可用"), hint="规则引擎由 M4（rules）交付；当前只能浏览规则文件")
             return EXIT_ERROR
         if not ok:
+            upstream = info.get("upstream") if isinstance(info.get("upstream"), dict) else {}
+            if upstream.get("requested") and not upstream.get("available"):
+                _fail(
+                    str(upstream.get("reason") or "rules/upstream 尚未就绪"),
+                    hint="上游规则导入由 rules 负责；去掉 --include-upstream 可只校验本地规则",
+                )
+                return EXIT_ERROR
             _fail("规则校验失败，详见上方错误")
             return EXIT_ERROR
         print("规则校验通过")
@@ -389,11 +411,13 @@ def cmd_rules(args: argparse.Namespace) -> int:
         _fail("rules match 需要 trace 路径", hint="python -m tianti rules match <trace.json>", code=EXIT_USAGE)
         return EXIT_USAGE
     trace = schema.load(args.target)
-    matches, note = pipeline.run_rules(trace, config=cfg)
-    if note:
+    matches, note = pipeline.run_rules(trace, config=cfg, include_upstream=args.include_upstream)
+    if note and not matches:
         _fail(note, hint="规则引擎由 M4（rules）交付；可先用 replay 查看检测器结果")
         return EXIT_ERROR
     payload = {"count": len(matches), "matches": [match.to_dict() for match in matches]}
+    if note:
+        payload["warning"] = note
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return EXIT_OK
 
@@ -423,6 +447,31 @@ def cmd_detectors(args: argparse.Namespace) -> int:
     if note:
         payload["warning"] = note
     print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------- convert-cape
+def cmd_convert_cape(args: argparse.Namespace) -> int:
+    from .trace import schema
+
+    try:
+        from tools.report2trace import convert_file
+    except ModuleNotFoundError as exc:
+        _fail(
+            f"报告转换器不可用: {exc}",
+            hint="需要仓库根 tools/report2trace.py，并在仓库根运行 python -m tianti",
+        )
+        return EXIT_ERROR
+    cfg = Config.load()
+    source = Path(args.report)
+    out = Path(args.out) if args.out else cfg.paths.out / (source.stem + ".trace.json")
+    path = convert_file(source, out)
+    trace = schema.load(path)
+    print(f"已生成 trace: {path}")
+    print(
+        f"事件: {len(trace.events)}  api: {trace.extra.get('api_calls')}  "
+        f"sample: {trace.sample.name}  trace_id: {trace.trace_id}"
+    )
     return EXIT_OK
 
 
@@ -462,12 +511,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_replay.add_argument("--policy", default=None, help="覆盖策略档位（仅记录）")
     p_replay.add_argument("--format", default="json", choices=["json", "summary"], help="输出格式")
     p_replay.add_argument("--out", default=None, help="结果输出文件或目录")
+    p_replay.add_argument(
+        "--include-upstream",
+        action="store_true",
+        help="加载 rules/upstream 官方 capa 规则（默认关闭，避免影响基线）",
+    )
     p_replay.set_defaults(func=cmd_replay)
 
     p_rules = sub.add_parser("rules", help="规则包管理")
     p_rules.add_argument("action", choices=["list", "validate", "match"], help="list / validate / match")
     p_rules.add_argument("target", nargs="?", help="match 时的 trace 路径")
     p_rules.add_argument("--json", action="store_true", help="以 JSON 输出")
+    p_rules.add_argument(
+        "--include-upstream",
+        action="store_true",
+        help="加载 rules/upstream 官方 capa 规则（默认关闭，避免影响基线）",
+    )
     p_rules.set_defaults(func=cmd_rules)
 
     p_detectors = sub.add_parser("detectors", help="检测器管理")
@@ -487,7 +546,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_scan.add_argument("--policy", default=None, help="fast / deep / paranoid")
     p_scan.add_argument("--out", default=None, help="输出目录")
     p_scan.add_argument("--format", default="both", choices=["json", "html", "both"], help="输出格式")
+    p_scan.add_argument(
+        "--include-upstream",
+        action="store_true",
+        help="加载 rules/upstream 官方 capa 规则（默认关闭，避免影响基线）",
+    )
     p_scan.set_defaults(func=cmd_scan)
+
+    p_convert = sub.add_parser("convert-cape", help="把 CAPE / capa 动态报告 JSON 转换为 trace")
+    p_convert.add_argument("report", help="CAPE / capa 动态报告 JSON 路径")
+    p_convert.add_argument("--out", default=None, help="输出 trace JSON（默认 out/<report>.trace.json）")
+    p_convert.set_defaults(func=cmd_convert_cape)
 
     p_serve = sub.add_parser("serve", help="启动本地 HTTP API（127.0.0.1）")
     p_serve.add_argument("--host", default="127.0.0.1", help="仅允许回环地址")

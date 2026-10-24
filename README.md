@@ -36,6 +36,13 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 # 真实扫描（管理员：containment 沙箱执行；非管理员：回退 replay 并在 notes 标注）
 & $PY -m tianti scan samples\sim\hello.ps1 --policy deep --format both --out out\scan
 
+# 上游 capa 规则（默认关闭，rules/upstream/ 625 条）
+& $PY -m tianti rules validate --include-upstream
+& $PY -m tianti replay tests\fixtures\traces\golden_ransom_sim.json --include-upstream --format summary
+
+# CAPE 报告 -> 行为轨迹（让 api 级上游规则可离线回放）
+& $PY -m tianti convert-cape report.json --out trace.json
+
 # 规则/检测器管理
 & $PY -m tianti rules validate
 & $PY -m tianti rules match tests\fixtures\traces\golden_injection.json
@@ -49,7 +56,7 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 
 - 静态预筛：PE32/PE64 结构、节区熵、导入/导出、签名目录存在性、overlay、加壳启发；脚本/归档特征；EICAR 识别（不执行）。
 - 沙箱：containment 后端（受限令牌 + 低完整性 + Job Object + 按程序防火墙 + 超时硬杀 + 进程树清理），事件覆盖 process/file/network/registry；replay 后端用于 CI 与离线分析。
-- capa 兼容规则引擎：and/or/not/optional/count/match（DAG）、5 种 scope、54 条自研规则。
+- capa 兼容规则引擎：and/or/not/optional/count/match（DAG）、5 种 scope、54 条自研规则 + 可选 625 条官方上游规则（`--include-upstream`）。
 - 危险行为检测：26 条 YAML 检测器（时序 + 聚合 + 序列），覆盖 10 个 ATT&CK 战术。
 - 判定：分数/置信度/证据链/抑制明细，clean/suspicious/malicious 三档。
 - 交付：CLI、单文件 HTML 报告、本地 HTTP API。
@@ -82,7 +89,9 @@ detect 已从 9.5s/1k 优化到 142ms/1k（窗口剪枝 + 编译期 hints + 加�
 ## 技术债
 
 - [M7] 统一 YAML 子集解析器：tianti/rules/yamlmini.py 与 tianti/detect/yamlmini.py 两份实现（语法改动需双改）。
-- [v2] 官方 flare-capa 差分（tools/capa_diff.py）：网络不可达，暂以自研规则包 + 单测为准。
+- 本机装有火绒 HIPS：EICAR 测试串会触发其误报（已改为运行时拼接、测试不落盘）；模拟行为样本执行时可能弹窗，属预期。
+- [v2] 官方 flare-capa 差分（tools/capa_diff.py）：本机网络受限，暂以自研兼容测试为准。
+- 上游规则 493 条实际加载（132 条因依赖规则未导入被剪枝），且依赖 api 级轨迹；containment 默认无 API hook，需 CAPE/capa 报告回放或后续 emulation 后端。
 - 内置 54 条规则当前全部 scope=process；thread/call/span/file 引擎已支持，按需补规则。
 - RuleMeta 无 severity 字段：能力权重由 ATT&CK 战术推导。
 - 目录扫描暂无汇总 manifest；无并发扫描。

@@ -21,7 +21,7 @@ from tianti.report.base import RESULT_SCHEMA
 
 GOLDEN = Path(__file__).resolve().parents[1] / "fixtures" / "traces" / "golden_ransom_sim.json"
 VERDICTS = ("clean", "suspicious", "malicious")
-SUBCOMMANDS = {"version", "trace", "replay", "rules", "detectors", "report", "scan", "serve"}
+SUBCOMMANDS = {"version", "trace", "replay", "rules", "detectors", "report", "scan", "convert-cape", "serve"}
 
 
 def run_cli(argv: list[str]) -> tuple[int, str, str]:
@@ -83,6 +83,52 @@ class CliReplayTests(unittest.TestCase):
             self.assertNotIn("<script", text)
             self.assertNotIn("http://", text)
             self.assertIn(str(html_path), out)
+
+    def test_convert_cape_to_trace_and_replay(self):
+        from tests.unit.test_report2trace import build_cape_report
+
+        with TemporaryDirectory() as tmp:
+            report_path = Path(tmp) / "cape_report.json"
+            report_path.write_text(json.dumps(build_cape_report()), encoding="utf-8")
+            trace_path = Path(tmp) / "converted.trace.json"
+            code, out, err = run_cli(["convert-cape", str(report_path), "--out", str(trace_path)])
+            self.assertEqual(code, 0, err)
+            self.assertTrue(trace_path.exists())
+            self.assertIn("已生成 trace", out)
+
+            from tianti.trace import schema
+
+            trace = schema.load(trace_path)
+            categories = {event.category for event in trace.events}
+            self.assertTrue({"api", "file", "registry"} <= categories, categories)
+            api_names = [event.args.get("api") for event in trace.events if event.category == "api"]
+            self.assertIn("AmsiScanBuffer", api_names)
+
+            code, out, err = run_cli(["replay", str(trace_path)])
+            self.assertEqual(code, 0, err)
+            payload = json.loads(out)
+            self.assertEqual(payload["schema"], RESULT_SCHEMA)
+            self.assertIn(payload["verdict"]["verdict"], VERDICTS)
+            self.assertEqual(payload["sample"]["name"], "demo_ransom.exe")
+
+    def test_include_upstream_flag_plumbing(self):
+        code, out, err = run_cli(["replay", str(GOLDEN), "--include-upstream"])
+        self.assertEqual(code, 0, err)
+        payload = json.loads(out)
+        self.assertTrue(payload["extra"]["analysis"]["include_upstream"])
+        # 默认关闭时必须为 False
+        code, out, err = run_cli(["replay", str(GOLDEN)])
+        self.assertEqual(code, 0, err)
+        self.assertFalse(json.loads(out)["extra"]["analysis"]["include_upstream"])
+
+    def test_rules_validate_include_upstream(self):
+        root = Path(__file__).resolve().parents[2]
+        upstream = root / "rules" / "upstream"
+        if not upstream.is_dir() or not any(upstream.rglob("*.yml")):
+            self.skipTest("rules/upstream 未就绪（等待 rules 完成上游 capa 规则导入）")
+        code, out, err = run_cli(["rules", "validate", "--include-upstream"])
+        self.assertEqual(code, 0, out + err)
+        self.assertIn("上游规则", out)
 
     def test_scan_trace_produces_json_and_html(self):
         with TemporaryDirectory() as tmp:
@@ -157,7 +203,7 @@ class CliSurfaceTests(unittest.TestCase):
         for name, subparser in choices.items():
             func = subparser.get_default("func")
             self.assertIsNotNone(func, f"{name} 未绑定命令函数")
-            self.assertEqual(func.__name__, "cmd_" + name)
+            self.assertEqual(func.__name__, "cmd_" + name.replace("-", "_"))
 
     def test_missing_sample_is_friendly_error(self):
         code, _, err = run_cli(["scan", "definitely-missing-sample-xyz.bin"])

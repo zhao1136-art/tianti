@@ -49,5 +49,9 @@
     },
     "whitelist_paths": [],
     "whitelist_sha256": []
+  },
+  "rules": {
+    "include_upstream": false,
+    "upstream_dir": "rules/upstream"
   }
 }

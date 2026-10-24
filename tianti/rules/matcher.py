@@ -16,15 +16,17 @@ from typing import Any, Iterable
 from ..core.errors import RuleError
 from ..trace.schema import Trace
 from .base import Rule, RuleMatch
-from .features import FeatureIndex
+from .features import FeatureIndex, normalize_path, normalize_registry_key
 from .parser import (
     AndNode,
+    AtLeastNode,
     CountNode,
     FeatureNode,
     MatchNode,
     NotNode,
     OptionalNode,
     OrNode,
+    RegexPattern,
     SubscopeNode,
 )
 
@@ -83,6 +85,113 @@ def _iter_match_refs(node: Any, out: set[str]) -> None:
         return
     if isinstance(node, CountNode):
         _iter_match_refs(node.child, out)
+
+
+_ANCHOR_KINDS = frozenset(
+    {
+        "api",
+        "file",
+        "registry",
+        "process",
+        "image",
+        "network",
+        "memory",
+        "thread",
+        "security",
+        "service",
+        "scheduled_task",
+        "token",
+    }
+)
+
+
+def _collect_anchor_groups(node: Any, groups: list[list[FeatureNode]]) -> None:
+    """收集「必须至少命中一个」的特征组，用于整份 trace 级保守剪枝。
+
+    AND: 每个子节点都必须满足 -> 合并各组（组数相加）
+    OR:  只要有一个子特征命中 -> 所有直接叶子特征组成一个 any 组
+    其他节点（not/optional/count/match/at least）不做要求。
+    """
+    if isinstance(node, FeatureNode):
+        if node.kind in _ANCHOR_KINDS:
+            groups.append([node])
+        return
+    if isinstance(node, AndNode):
+        for child in node.children:
+            _collect_anchor_groups(child, groups)
+        return
+    if isinstance(node, OrNode):
+        features = [
+            child
+            for child in node.children
+            if isinstance(child, FeatureNode) and child.kind in _ANCHOR_KINDS
+        ]
+        if features:
+            groups.append(features)
+
+
+def _anchor_available(node: FeatureNode, index: FeatureIndex) -> bool:
+    """粗粒度判断某必须特征在整份 trace 中是否可能命中（仅做保守剪枝）。"""
+    kind = node.kind
+    action = node.action
+    value = node.value
+    if kind == "api":
+        if value is None:
+            return bool(index.candidates("api", "call"))
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            text = str(item)
+            if "*" in text or "?" in text:
+                return bool(index.candidates("api", "call"))
+            if not index.token_events(f"api:{text.lower()}"):
+                return False
+        return True
+    if kind in ("file", "registry", "process", "image"):
+        wanted_action = action
+        if kind == "process":
+            wanted_action = "create"
+        elif kind == "image":
+            wanted_action = "load"
+        if value is None or node.entropy_min is not None:
+            return bool(index.candidates(kind, wanted_action))
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if isinstance(item, RegexPattern):
+                return True
+            text = str(item)
+            if "*" in text or "?" in text:
+                return True
+            normalized = (
+                normalize_registry_key(text) if kind == "registry" else normalize_path(text)
+            )
+            token = (
+                f"{kind}:{wanted_action}:{normalized}" if wanted_action else f"{kind}:{normalized}"
+            )
+            if not index.token_events(token):
+                return False
+        return True
+    if kind == "network":
+        if action in ("ip", "port", "host"):
+            if value is None:
+                return bool(index.candidates("network"))
+            values = value if isinstance(value, list) else [value]
+            for item in values:
+                if item is None:
+                    continue
+                if action == "port":
+                    if not index.token_events(f"port:{int(item)}"):
+                        return False
+                else:
+                    text = str(item).lower()
+                    if "*" in text or "?" in text:
+                        return True
+                    if not index.token_events(f"{action}:{text}"):
+                        return False
+            return True
+        return bool(index.candidates("network", action))
+    if kind in ("memory", "thread", "security", "service", "scheduled_task", "token"):
+        return bool(index.candidates(kind, action))
+    return True
 
 
 def build_dependencies(rules: Iterable[Rule]) -> dict[str, list[str]]:
@@ -155,9 +264,17 @@ class Matcher:
         matches: list[RuleMatch] = []
         # 同 scope 的实例只构建一次（54 条规则只会有 1~5 次实例化）
         instance_cache: dict[str, list[Instance]] = {}
+        anchor_cache: dict[str, bool] = {}
         for rule in self.order:
             scope = rule.meta.scope
             try:
+                # 锚点预筛：规则里必须命中的 api/文件/注册表等特征若全局不存在，整条规则跳过
+                available = anchor_cache.get(rule.name)
+                if available is None:
+                    available = self._rule_anchors_available(rule, index)
+                    anchor_cache[rule.name] = available
+                if not available:
+                    continue
                 instances = instance_cache.get(scope)
                 if instances is None:
                     instances = self._instances(scope, index)
@@ -174,6 +291,16 @@ class Matcher:
                 if result.matched:
                     matches.append(self._to_match(rule, instance, result, index))
         return matches
+
+    # ------------------------------------------------------------------ 锚点预筛
+    def _rule_anchors_available(self, rule: Rule, index: FeatureIndex) -> bool:
+        groups: list[list[FeatureNode]] = []
+        for node in rule.features:
+            _collect_anchor_groups(node, groups)
+        for group in groups:
+            if group and not any(_anchor_available(feature, index) for feature in group):
+                return False
+        return True
 
     # ------------------------------------------------------------------ scope
     def _instances(self, scope: str, index: FeatureIndex) -> list[Instance]:
@@ -284,6 +411,9 @@ class Matcher:
         cache: dict[tuple[str, str], NodeResult],
     ) -> NodeResult:
         if isinstance(node, FeatureNode):
+            # os: windows 是本引擎的恒真环境约束（只跑 Windows 沙箱），无证据事件
+            if node.kind == "os":
+                return NodeResult(matched=True)
             ids = index.match_feature(node, instance.allowed, instance.ids)
             if not ids:
                 return NodeResult(matched=False)
@@ -292,6 +422,18 @@ class Matcher:
                 count=len(ids),
                 evidence={node.label: _capped(ids)},
             )
+        if isinstance(node, AtLeastNode):
+            # capa "N or more: [feature, ...]"：至少 N 个子特征命中
+            evidence: dict[str, list[str]] = {}
+            matched_count = 0
+            for child in node.children:
+                result = self._evaluate(child, index, instance, cache)
+                if result.matched:
+                    matched_count += 1
+                    _merge_evidence(evidence, result.evidence)
+            if matched_count < node.minimum:
+                return NodeResult(matched=False)
+            return NodeResult(matched=True, count=matched_count, evidence=evidence)
         if isinstance(node, AndNode):
             evidence: dict[str, list[str]] = {}
             for child in node.children:

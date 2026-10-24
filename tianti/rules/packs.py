@@ -10,14 +10,18 @@ from typing import Any, Iterable
 
 from ..core.errors import RuleError
 from .base import Rule, RuleSet
+from .matcher import build_dependencies
 from .parser import ATTACK_RE, SCOPES, parse_rule_file, UnsupportedFeature
 
 __all__ = [
     "DEFAULT_RULES_DIR",
     "NAMESPACE_RE",
+    "UPSTREAM_DIRNAME",
+    "EXCLUDED_RULE_DIRS",
     "LintReport",
     "LoadResult",
     "default_rule_dirs",
+    "is_rule_yaml",
     "iter_rule_files",
     "lint_rules",
     "load_rulepack",
@@ -25,6 +29,23 @@ __all__ = [
 
 DEFAULT_RULES_DIR = Path(__file__).resolve().parents[2] / "rules"
 NAMESPACE_RE = re.compile(r"^[a-z0-9][a-z0-9_./-]*$")
+# 官方 capa-rules 仓库里混有 CI/文档 YAML，扫描时排除
+EXCLUDED_RULE_DIRS = {".github", "doc", "docs", "tests"}
+UPSTREAM_DIRNAME = "upstream"
+
+
+def is_rule_yaml(path: str | Path) -> bool:
+    """首个有效行必须是 "rule:"（用于区分官方仓库里的非规则 YAML）。"""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped in ("---", "..."):
+            continue
+        return stripped.startswith("rule:")
+    return False
 
 
 def default_rule_dirs() -> list[Path]:
@@ -36,14 +57,26 @@ def default_rule_dirs() -> list[Path]:
     return [root]
 
 
-def iter_rule_files(paths: Iterable[str | Path]) -> list[Path]:
-    """递归收集 .yml/.yaml 规则文件；路径不存在时抛 RuleError（不静默）。"""
+def iter_rule_files(
+    paths: Iterable[str | Path], *, include_upstream: bool = False
+) -> list[Path]:
+    """递归收集 .yml/.yaml 规则文件；路径不存在时抛 RuleError（不静默）。
+
+    默认排除 <rules_dir>/upstream/**（上游可选规则包），并排除 .github/doc 等非规则目录；
+    include_upstream=True 时才加载 upstream 子包。
+    """
     files: list[Path] = []
     for path in paths:
         candidate = Path(path)
         if candidate.is_dir():
             for pattern in ("*.yml", "*.yaml"):
-                files.extend(sorted(candidate.rglob(pattern)))
+                for item in sorted(candidate.rglob(pattern)):
+                    parts = item.relative_to(candidate).parts[:-1]
+                    if any(part in EXCLUDED_RULE_DIRS for part in parts):
+                        continue
+                    if not include_upstream and UPSTREAM_DIRNAME in parts:
+                        continue
+                    files.append(item)
         elif candidate.is_file():
             files.append(candidate)
         else:
@@ -154,17 +187,51 @@ def lint_rules(rule_set: RuleSet, *, files: int | None = None) -> LintReport:
     return report
 
 
-def load_rulepack(paths: Iterable[str | Path] | None = None) -> LoadResult:
-    """加载规则包（目录或文件列表）。解析失败/不支持项记录后继续，绝不静默。"""
+def _prune_unresolved_matches(rule_set: RuleSet) -> None:
+    """丢弃 match 引用了未加载规则的规则（上游包会因 unsupported 规则缺位）。
+
+    上游规则大量使用 match 引用；被引用的规则若因静态特征不支持而跳过，
+    引用方也必须跳过，否则 Matcher 会因未知引用报错导致整个规则包不可用。
+    """
+    rules = list(rule_set.rules)
+    names = {rule.name for rule in rules}
+    changed = True
+    while changed:
+        changed = False
+        for rule in list(rules):
+            refs = build_dependencies([rule]).get(rule.name, [])
+            missing = [ref for ref in refs if ref not in names]
+            if not missing:
+                continue
+            rule_set.unsupported.append(
+                f"{rule.source_path or rule.name}: match 引用未加载规则 {missing}，已跳过该规则"
+            )
+            rules.remove(rule)
+            names.discard(rule.name)
+            changed = True
+    rule_set.rules = rules
+
+
+def load_rulepack(
+    paths: Iterable[str | Path] | None = None, *, include_upstream: bool = False
+) -> LoadResult:
+    """加载规则包（目录或文件列表）。解析失败/不支持项记录后继续，绝不静默。
+
+    默认不加载 <rules_dir>/upstream/**；include_upstream=True 时递归加载上游可选包。
+    """
     selected = list(paths) if paths is not None else default_rule_dirs()
     if not selected:
         raise RuleError("未提供规则路径")
-    files = iter_rule_files(selected)
+    files = iter_rule_files(selected, include_upstream=include_upstream)
     if not files:
         raise RuleError(f"规则路径下没有 .yml/.yaml 文件: {[str(p) for p in selected]}")
     rule_set = RuleSet()
     seen: dict[str, str] = {}
+    non_rule = 0
     for path in files:
+        if not is_rule_yaml(path):
+            non_rule += 1
+            continue
         try:
             rule = parse_rule_file(path)
         except UnsupportedFeature as exc:
@@ -180,5 +247,11 @@ def load_rulepack(paths: Iterable[str | Path] | None = None) -> LoadResult:
             continue
         seen[rule.name] = str(path)
         rule_set.rules.append(rule)
+    _prune_unresolved_matches(rule_set)
     lint = lint_rules(rule_set, files=len(files))
+    lint.stats["non_rule_files"] = non_rule
+    lint.stats["upstream_rules"] = sum(
+        1 for rule in rule_set.rules if UPSTREAM_DIRNAME in Path(rule.source_path).parts
+    )
+    lint.stats["include_upstream"] = bool(include_upstream)
     return LoadResult(rule_set=rule_set, lint=lint, files=[str(path) for path in files])

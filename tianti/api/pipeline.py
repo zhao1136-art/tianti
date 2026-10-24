@@ -90,6 +90,17 @@ def _call_with_context(func: Callable[..., Any], context: dict[str, Any]) -> Any
     return func(*positional, **kwargs)
 
 
+def _accepts_param(func: Callable[..., Any], name: str) -> bool:
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):
+        return False
+    for parameter in signature.parameters.values():
+        if parameter.name == name or parameter.kind == parameter.VAR_KEYWORD:
+            return True
+    return False
+
+
 def _as_items(value: Any, *keys: str) -> list[Any]:
     if value is None:
         return []
@@ -141,20 +152,39 @@ def _reason_text(reasons: list[str]) -> str:
 
 
 # --------------------------------------------------------------------- 规则 / 检测器
-def run_rules(trace: Trace, *, config: Config | None = None) -> tuple[list[RuleMatch], str | None]:
-    """执行 capa 规则匹配；引擎缺失/异常时返回 (空列表, 原因)。"""
+def run_rules(
+    trace: Trace,
+    *,
+    config: Config | None = None,
+    include_upstream: bool = False,
+) -> tuple[list[RuleMatch], str | None]:
+    """执行 capa 规则匹配；引擎缺失/异常时返回 (空列表, 原因)。
+
+    include_upstream=True 时把开关传给 rules 引擎（加载 rules/upstream 官方规则）；
+    旧版引擎无此参数时忽略开关并在 note 中说明，保证向后兼容。
+    """
     cfg = config or Config.load()
     func, module_name, reasons = _resolve(RULES_MODULES, RULES_ENTRIES)
     if func is None:
         return [], "规则引擎尚未接通（" + _reason_text(reasons) + "），能力列表为空"
+    note: str | None = None
+    if include_upstream and not _accepts_param(func, "include_upstream"):
+        note = "当前规则引擎未支持 include_upstream，已仅使用本地规则匹配"
     try:
         raw = _call_with_context(
             func,
-            {"trace": trace, "rules_dir": cfg.paths.rules, "rules_path": cfg.paths.rules, "cfg": cfg, "config": cfg},
+            {
+                "trace": trace,
+                "rules_dir": cfg.paths.rules,
+                "rules_path": cfg.paths.rules,
+                "include_upstream": bool(include_upstream),
+                "cfg": cfg,
+                "config": cfg,
+            },
         )
     except Exception as exc:
         return [], f"规则匹配异常（{module_name}）: {exc}"
-    return _to_rule_matches(raw), None
+    return _to_rule_matches(raw), note
 
 
 def run_detectors(trace: Trace, *, config: Config | None = None) -> tuple[list[DetectorHit], str | None]:
@@ -365,11 +395,12 @@ def analyze_trace(
     static: dict[str, Any] | None = None,
     config: Config | None = None,
     extra_notes: Iterable[str] | None = None,
+    include_upstream: bool = False,
 ) -> ScanResult:
     """trace -> 规则 -> 检测器 -> 评分 -> ScanResult（离线可重放）。"""
     cfg = config or Config.load()
     static_payload = dict(static or {})
-    matches, rules_note = run_rules(trace, config=cfg)
+    matches, rules_note = run_rules(trace, config=cfg, include_upstream=include_upstream)
     hits, detectors_note = run_detectors(trace, config=cfg)
     verdict, scoring_note = run_scoring(trace, matches, hits, static_payload, config=cfg)
 
@@ -401,8 +432,8 @@ def analyze_trace(
         if note and note not in notes:
             notes.append(str(note))
 
-    rules_available = rules_note is None
-    detectors_available = detectors_note is None
+    rules_available = rules_note is None or bool(matches)
+    detectors_available = detectors_note is None or bool(hits)
     scoring_engine = scoring_note is None
     extra: dict[str, Any] = {
         "engine_version": __version__,
@@ -416,6 +447,7 @@ def analyze_trace(
             "rules_available": rules_available,
             "detectors_available": detectors_available,
             "scoring": "engine" if scoring_engine else "fallback",
+            "include_upstream": bool(include_upstream),
             "rules_count": len(matches),
             "detectors_count": len(hits),
         },
@@ -547,6 +579,7 @@ def scan_path(
     *,
     policy: str | None = None,
     config: Config | None = None,
+    include_upstream: bool = False,
 ) -> ScanResult:
     """一条命令完成扫描：trace JSON -> 离线分析；其他文件 -> 静态 + 沙箱 + 分析。"""
     cfg = config or Config.load()
@@ -562,6 +595,7 @@ def scan_path(
             trace,
             static={"available": False, "reason": "输入为回放 trace，不包含静态预筛阶段"},
             config=cfg,
+            include_upstream=include_upstream,
         )
         result.notes.insert(0, "输入为 trace JSON：离线重放分析，未执行样本。")
         result.extra["input"] = "replay"
@@ -571,7 +605,7 @@ def scan_path(
     static_payload = run_static(target, config=cfg)
     trace, backend_info = run_backend(target, policy_name=policy, config=cfg)
     trace.extra.setdefault("source_path", str(target))
-    result = analyze_trace(trace, static=static_payload, config=cfg)
+    result = analyze_trace(trace, static=static_payload, config=cfg, include_upstream=include_upstream)
     result.extra["input"] = "sandbox"
     result.extra["backend"] = backend_info
     if backend_info.get("fallback"):
@@ -644,33 +678,54 @@ def _describe_pack(modules: Iterable[str], entries: Iterable[str], directory: Pa
     }
 
 
-def describe_rules(config: Config | None = None) -> dict[str, Any]:
+def describe_rules(config: Config | None = None, *, include_upstream: bool = False) -> dict[str, Any]:
+    """规则包摘要；include_upstream=True 时把 rules/upstream 一并加载统计。"""
     cfg = config or Config.load()
     directory = cfg.paths.rules
     files: list[str] = []
     if directory.exists():
         for pattern in ("*.yml", "*.yaml"):
             files.extend(str(path.relative_to(directory)) for path in sorted(directory.rglob(pattern)))
+    upstream_dir = directory / "upstream"
+    upstream_files: list[str] = []
+    if upstream_dir.is_dir():
+        for pattern in ("*.yml", "*.yaml"):
+            upstream_files.extend(
+                str(path.relative_to(upstream_dir)) for path in sorted(upstream_dir.rglob(pattern))
+            )
+    upstream = {
+        "requested": bool(include_upstream),
+        "available": upstream_dir.is_dir() and bool(upstream_files),
+        "path": str(upstream_dir),
+        "files": len(upstream_files),
+        "reason": "",
+    }
+    if include_upstream and not upstream["available"]:
+        upstream["reason"] = "rules/upstream 尚未就绪（等待 rules 完成上游规则导入）"
     try:
         from ..rules.packs import load_rulepack
     except Exception as exc:
         return {
             "available": False,
             "engine": None,
-            "count": len(files),
+            "count": len(files) + len(upstream_files),
             "files": files,
+            "upstream": upstream,
             "reason": f"规则引擎尚未接通（{exc}）",
         }
     subdirs = [directory / "capability", directory / "attack"]
     targets: list[Path] = [path for path in subdirs if path.is_dir()]
     if not targets and directory.is_dir():
         targets = [directory]
+    if include_upstream and upstream["available"]:
+        targets.append(upstream_dir)
     if not targets:
         return {
             "available": False,
             "engine": "tianti.rules.packs",
-            "count": len(files),
+            "count": len(files) + len(upstream_files),
             "files": files,
+            "upstream": upstream,
             "reason": f"规则目录为空或不存在: {directory}",
         }
     try:
@@ -679,21 +734,26 @@ def describe_rules(config: Config | None = None) -> dict[str, Any]:
         return {
             "available": False,
             "engine": "tianti.rules.packs",
-            "count": len(files),
+            "count": len(files) + len(upstream_files),
             "files": files,
+            "upstream": upstream,
             "reason": f"规则包加载失败: {exc}",
         }
     rules = loaded.rules
+    warnings = list(loaded.lint.warnings)
+    if upstream["requested"] and not upstream["available"]:
+        warnings.append(upstream["reason"])
     return {
         "available": True,
         "engine": "tianti.rules.packs",
         "count": len(rules),
         "files_count": len(loaded.files),
         "files": files,
+        "upstream": upstream,
         "rules": [rule.name for rule in rules],
         "namespaces": [rule.meta.namespace for rule in rules],
         "errors": list(loaded.lint.errors),
-        "warnings": list(loaded.lint.warnings),
+        "warnings": warnings,
         "unsupported": list(loaded.unsupported),
     }
 
@@ -708,8 +768,14 @@ def describe_detectors(config: Config | None = None) -> dict[str, Any]:
     )
 
 
-def validate_rules(config: Config | None = None) -> tuple[bool, dict[str, Any]]:
-    info = describe_rules(config)
+def validate_rules(
+    config: Config | None = None,
+    *,
+    include_upstream: bool = False,
+) -> tuple[bool, dict[str, Any]]:
+    info = describe_rules(config, include_upstream=include_upstream)
     if not info.get("available"):
+        return False, info
+    if include_upstream and not (info.get("upstream") or {}).get("available"):
         return False, info
     return not info.get("errors"), info
