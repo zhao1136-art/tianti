@@ -138,6 +138,15 @@ class ScoringConfig:
         )
 
 
+def default_root() -> Path:
+    """仓库根目录；PyInstaller 冻结后是 exe 所在目录（规则/配置与 exe 同级）。"""
+    import sys
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]
+
+
 DEFAULT_POLICIES: dict[str, dict[str, Any]] = {
     "fast": {
         "timeout_s": 10,
@@ -187,7 +196,7 @@ class Config:
     @classmethod
     def default(cls, root: str | Path | None = None) -> "Config":
         if root is None:
-            root = Path(__file__).resolve().parents[2]
+            root = default_root()
         paths = PathsConfig.from_root(root)
         policies = {name: PolicyConfig.from_dict(data, name=name) for name, data in DEFAULT_POLICIES.items()}
         return cls(paths=paths, policies=policies, default_policy="deep", scoring=ScoringConfig())

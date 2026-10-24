@@ -48,6 +48,11 @@ MAX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_ARCHIVE_FILE_BYTES = 32 * 1024 * 1024
 MAX_ARCHIVE_DEPTH = 2
 _ARCHIVE_TYPES = (SampleType.ARCHIVE_ZIP, SampleType.ARCHIVE_RAR, SampleType.ARCHIVE_7Z)
+# Office 容器本质是 zip，但必须走 office 宏分析而不是普通压缩包展开
+_OFFICE_CONTAINER_SUFFIXES = {
+    ".docx", ".docm", ".dotx", ".dotm", ".xlsx", ".xlsm", ".xltx", ".xltm", ".xlsb",
+    ".pptx", ".pptm", ".potx", ".potm", ".ppsx", ".ppsm", ".sldx", ".sldm", ".xlam",
+}
 _ARCHIVE_SUFFIXES = {".zip", ".rar", ".7z"}
 
 
@@ -736,19 +741,28 @@ def _build_archive_result(
             }
         )
         if expanded_entries:
-            worst_meta, worst_result = max(
+            worst_meta, _worst_result = max(
                 expanded_entries,
                 key=lambda pair: (_archive_rank(pair[0].get("verdict", "")), float(pair[0].get("score") or 0.0)),
             )
-            tactics: set[str] = set()
-            techniques: set[str] = set()
+            tactics = set(result.verdict.tactics)
+            techniques = set(result.verdict.techniques)
             for _, entry_result in expanded_entries:
                 tactics.update(entry_result.verdict.tactics)
                 techniques.update(entry_result.verdict.techniques)
-            confidence = max(
+            entry_confidence = max(
                 float(entry_result.verdict.confidence) for _, entry_result in expanded_entries
             )
-            worst_score = max(float(entry.verdict.score) for _, entry in expanded_entries)
+            entry_score = max(float(entry.verdict.score) for _, entry in expanded_entries)
+            top_score = float(result.verdict.score)
+            top_verdict = result.verdict_name
+            entry_verdict = str(worst_meta.get("verdict") or top_verdict)
+            final_score = round(max(entry_score, top_score), 3)
+            # 顶层静态信号（如归档嵌入可执行、Office 宏）与条目取更严重者，不能因展开而丢失顶层结论
+            if (_archive_rank(entry_verdict), entry_score) > (_archive_rank(top_verdict), top_score):
+                final_verdict = entry_verdict
+            else:
+                final_verdict = top_verdict
             items = list(result.verdict.items)
             items.append(
                 ScoreItem(
@@ -757,13 +771,15 @@ def _build_archive_result(
                     score=float(worst_meta.get("score") or 0.0),
                     detail=(
                         f"压缩包最严重条目（汇总取 max）：{worst_meta.get('name', '')} "
-                        f"{worst_meta.get('verdict', '')} score={worst_meta.get('score', 0)}"
+                        f"{entry_verdict} score={worst_meta.get('score', 0)}"
                     ),
                 )
             )
-            result.verdict.verdict = str(worst_meta.get("verdict") or result.verdict.verdict)
-            result.verdict.score = round(worst_score, 3)
-            result.verdict.confidence = round(min(1.0, confidence), 3)
+            result.verdict.verdict = final_verdict
+            result.verdict.score = final_score
+            result.verdict.confidence = round(
+                min(1.0, max(entry_confidence, float(result.verdict.confidence))), 3
+            )
             result.verdict.tactics = sorted(tactics)
             result.verdict.techniques = sorted(techniques)
             result.verdict.items = items
@@ -1003,7 +1019,11 @@ def scan_path(
 
     static_payload = run_static(target, config=cfg)
     sample = Sample.from_path(target)
-    if sample.type == SampleType.ARCHIVE_ZIP and expand_archives:
+    if (
+        sample.type == SampleType.ARCHIVE_ZIP
+        and expand_archives
+        and target.suffix.lower() not in _OFFICE_CONTAINER_SUFFIXES
+    ):
         return _scan_archive(
             target,
             sample,
@@ -1012,7 +1032,7 @@ def scan_path(
             policy=policy,
             include_upstream=include_upstream,
         )
-    if sample.type in _ARCHIVE_TYPES:
+    if sample.type in _ARCHIVE_TYPES and target.suffix.lower() not in _OFFICE_CONTAINER_SUFFIXES:
         return _build_archive_result(
             target,
             sample,

@@ -74,8 +74,9 @@ class ZipExpandTests(unittest.TestCase):
 
         rank = {"clean": 0, "suspicious": 1, "malicious": 2}
         expected = max(archive["entries"], key=lambda item: (rank.get(item["verdict"], 0), item["score"]))
-        self.assertEqual(result.verdict_name, expected["verdict"])
-        self.assertAlmostEqual(float(result.verdict.score), float(expected["score"]), places=3)
+        # 顶层归档静态信号（嵌入可执行、嵌套包等）可能比任何条目更严重：聚合取更严重者
+        self.assertGreaterEqual(rank.get(result.verdict_name, 0), rank.get(expected["verdict"], 0))
+        self.assertGreaterEqual(float(result.verdict.score), float(expected["score"]) - 1e-9)
         joined = " ".join(result.notes)
         self.assertIn("压缩包内共 3 个文件", joined)
         self.assertIn("最严重条目", joined)
@@ -216,3 +217,18 @@ class ArchiveFormatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OfficeContainerRoutingTests(unittest.TestCase):
+    def test_office_container_is_not_expanded_as_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "demo.docm"
+            with zipfile.ZipFile(path, "w") as archive:
+                archive.writestr("word/vbaProject.bin", b"VBA" + b"\x00" * 64)
+            result = pipeline.scan_path(path)
+        self.assertIsNone((result.extra or {}).get("archive"), "Office 容器不应走普通 zip 展开")
+        office = result.static.get("office") or {}
+        self.assertEqual(office.get("container"), "ooxml")
+        self.assertTrue(office.get("has_macros"))
+        self.assertIn("office.macro_present", [item["id"] for item in (result.static.get("signals") or [])])
+        self.assertIn(result.verdict_name, ("suspicious", "malicious"))

@@ -18,3 +18,7 @@ samples/**/*.obj
 .mypy_cache/
 .DS_Store
 docs/gui_probe.*
+.build-venv/
+build/
+dist/
+*.spec

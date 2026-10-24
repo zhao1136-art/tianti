@@ -114,6 +114,22 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 性能差距说明：rules 10k 的 591ms 主要花在 string 特征的线性正则扫描（正则无法倒排）；
 detect 已从 9.5s/1k 优化到 142ms/1k（窗口剪枝 + 编译期 hints + 加载缓存）。
 
+## 打包（便携版）
+
+生成无需安装 Python 的便携版（PyInstaller，GUI + CLI 双入口，规则/检测器/配置随包）：
+
+```powershell
+python -m venv .build-venv
+.\.build-venv\Scripts\python.exe -m pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org pyinstaller
+powershell -ExecutionPolicy Bypass -File scripts\build_portable.ps1 -Version 0.3.0
+```
+
+产物：`dist\御天分析-0.3.0-便携版.zip`
+
+- `御天分析.exe`（GUI）、`tianti.exe`（CLI）、`rules/`、`detectors/`、`config/`、`docs/`、golden trace 演示数据、`启动御天分析.bat`；
+- 解压后双击 `启动御天分析.bat` 或 `御天分析.exe` 即可，无需 Python；
+- 只想要源码包（目标机有 Python 3.12）：`scripts\build_source_zip.ps1` → `dist\御天分析-0.3.0-源码包.zip`。
+
 ## 实验代码（未接入）
 
 - **DLL 动态加载**：`tianti/sandbox/containment.py` 里有 rundll32/regsvr32 启动分支与单测，但

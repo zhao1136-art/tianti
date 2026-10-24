@@ -527,9 +527,15 @@ class TiantiApp:
         self, path: Path, policy: str, include_upstream: bool, *, index: int, total: int
     ) -> ScanResult:
         """沙箱扫描放到子进程执行，便于「停止」时整棵进程树强杀。"""
+        prefix = self._cli_command_prefix()
+        if not prefix:
+            # 冻结版缺少 tianti.exe 时退回进程内扫描（无法强杀，但至少能出结果）
+            return pipeline.scan_path(
+                path, policy=policy, config=self.config, include_upstream=include_upstream
+            )
         tmp = Path(tempfile.mkdtemp(prefix="tianti_gui_"))
-        command = [
-            sys.executable, "-m", "tianti", "scan", str(path),
+        command = list(prefix) + [
+            "scan", str(path),
             "--policy", policy, "--format", "json", "--out", str(tmp),
         ]
         if include_upstream:
@@ -569,6 +575,13 @@ class TiantiApp:
         result = load_result(candidates[0])
         shutil.rmtree(tmp, ignore_errors=True)
         return result
+
+    def _cli_command_prefix(self) -> list[str]:
+        """返回调用 CLI 的命令前缀；PyInstaller 冻结版用同目录 tianti.exe。"""
+        if getattr(sys, "frozen", False):
+            cli = self.config.paths.root / "tianti.exe"
+            return [str(cli)] if cli.is_file() else []
+        return [sys.executable, "-m", "tianti"]
 
     def _kill_process_tree(self, proc: "subprocess.Popen[str]") -> None:
         if proc.poll() is not None:
