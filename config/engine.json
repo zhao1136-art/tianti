@@ -1,0 +1,55 @@
+{
+  "default_policy": "deep",
+  "policies": {
+    "fast": {
+      "timeout_s": 10,
+      "mem_mb": 256,
+      "cpu_s": 5,
+      "network": "blocked",
+      "max_events": 5000,
+      "backend": "replay",
+      "follow_children": true
+    },
+    "deep": {
+      "timeout_s": 20,
+      "mem_mb": 512,
+      "cpu_s": 10,
+      "network": "blocked",
+      "max_events": 20000,
+      "backend": "containment",
+      "follow_children": true
+    },
+    "paranoid": {
+      "timeout_s": 60,
+      "mem_mb": 768,
+      "cpu_s": 30,
+      "network": "blocked",
+      "max_events": 50000,
+      "backend": "containment",
+      "follow_children": true
+    }
+  },
+  "scoring": {
+    "clean_below": 10,
+    "malicious_at": 40,
+    "critical_escalation": true,
+    "signed_downgrade": 0.5,
+    "tactic_weights": {
+      "TA0001": 6,
+      "TA0002": 8,
+      "TA0003": 10,
+      "TA0004": 15,
+      "TA0005": 8,
+      "TA0006": 15,
+      "TA0007": 5,
+      "TA0008": 15,
+      "TA0009": 8,
+      "TA0011": 15,
+      "TA0040": 20
+    },
+    "whitelist_paths": [
+      "C:\\Windows\\"
+    ],
+    "whitelist_sha256": []
+  }
+}

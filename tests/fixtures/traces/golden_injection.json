@@ -1,0 +1,193 @@
+{
+  "trace_id": "20261024T103502Z-9e8d7c6b",
+  "schema": "tianti.trace/1",
+  "created_at": "2026-10-24T10:35:02+08:00",
+  "sample": {
+    "name": "demo_loader.exe",
+    "sha256": "c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4c9d4",
+    "size": 32768,
+    "type": "pe32"
+  },
+  "engine": {
+    "version": "0.1.0",
+    "backend": "replay",
+    "policy": "deep"
+  },
+  "sandbox": {
+    "host": "WIN10-19045",
+    "isolation": [
+      "restricted_token",
+      "job_object",
+      "fw_block_out"
+    ],
+    "limits": {
+      "timeout_s": 20,
+      "mem_mb": 512,
+      "cpu_s": 10,
+      "network": "blocked"
+    },
+    "started_at": "2026-10-24T10:35:02+08:00",
+    "ended_at": "2026-10-24T10:35:05+08:00",
+    "terminated_by": "exited"
+  },
+  "events": [
+    {
+      "id": "e00001",
+      "ts": 0.2,
+      "pid": 6000,
+      "ppid": 5990,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "process",
+      "action": "create",
+      "target": "C:\\sandbox\\work\\demo_loader.exe",
+      "args": {
+        "command_line": "demo_loader.exe"
+      },
+      "source": "etw:process",
+      "confidence": "high"
+    },
+    {
+      "id": "e00002",
+      "ts": 0.5,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "memory",
+      "action": "alloc",
+      "target": "explorer.exe:6012",
+      "args": {
+        "size": 4096,
+        "protect": "PAGE_EXECUTE_READWRITE"
+      },
+      "source": "etw:memory",
+      "confidence": "medium"
+    },
+    {
+      "id": "e00003",
+      "ts": 0.65,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "api",
+      "action": "call",
+      "args": {
+        "api": "VirtualAllocEx",
+        "ret": "0x1F0000"
+      },
+      "target": "explorer.exe:6012",
+      "source": "api:user",
+      "confidence": "high"
+    },
+    {
+      "id": "e00004",
+      "ts": 0.9,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "memory",
+      "action": "write",
+      "target": "explorer.exe:6012",
+      "args": {
+        "size": 4096
+      },
+      "source": "etw:memory",
+      "confidence": "medium"
+    },
+    {
+      "id": "e00005",
+      "ts": 1.1,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "thread",
+      "action": "remote_create",
+      "target": "explorer.exe:6012",
+      "args": {
+        "start_address": "0x1F0000"
+      },
+      "source": "etw:thread",
+      "confidence": "high"
+    },
+    {
+      "id": "e00006",
+      "ts": 1.3,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "api",
+      "action": "call",
+      "args": {
+        "api": "WriteProcessMemory"
+      },
+      "target": "explorer.exe:6012",
+      "source": "api:user",
+      "confidence": "high"
+    },
+    {
+      "id": "e00007",
+      "ts": 1.55,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "security",
+      "action": "amsi",
+      "target": "amsi.dll",
+      "args": {
+        "action": "patch",
+        "api": "AmsiScanBuffer"
+      },
+      "source": "api:user",
+      "confidence": "high"
+    },
+    {
+      "id": "e00008",
+      "ts": 2,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "network",
+      "action": "connect",
+      "target": "185.220.101.7:443",
+      "args": {
+        "proto": "tcp"
+      },
+      "source": "etw:network",
+      "confidence": "medium"
+    },
+    {
+      "id": "e00009",
+      "ts": 2.4,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "file",
+      "action": "delete",
+      "target": "C:\\sandbox\\work\\demo_loader.exe",
+      "source": "etw:file",
+      "confidence": "high"
+    },
+    {
+      "id": "e00010",
+      "ts": 2.6,
+      "pid": 6000,
+      "image": "C:\\sandbox\\work\\demo_loader.exe",
+      "category": "process",
+      "action": "exit",
+      "target": "C:\\sandbox\\work\\demo_loader.exe",
+      "args": {
+        "exit_code": 0
+      },
+      "source": "etw:process",
+      "confidence": "high"
+    }
+  ],
+  "summary": {
+    "processes": 1,
+    "threads": 1,
+    "file_writes": 0,
+    "file_drops": 0,
+    "reg_sets": 0,
+    "net_connects": 1,
+    "dns_queries": 0,
+    "services": 0,
+    "tasks": 0,
+    "apis": 2,
+    "first_seen": 0.2,
+    "event_count": 10,
+    "dropped": 0,
+    "truncated": false,
+    "dropped_files": []
+  }
+}

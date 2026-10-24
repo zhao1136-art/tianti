@@ -1,0 +1,167 @@
+{
+  "trace_id": "20261024T103501Z-1b2c3d4e",
+  "schema": "tianti.trace/1",
+  "created_at": "2026-10-24T10:35:01+08:00",
+  "sample": {
+    "name": "demo_installer.exe",
+    "sha256": "b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2b7c2",
+    "size": 1048576,
+    "type": "pe64"
+  },
+  "engine": {
+    "version": "0.1.0",
+    "backend": "replay",
+    "policy": "deep"
+  },
+  "sandbox": {
+    "host": "WIN10-19045",
+    "isolation": [
+      "restricted_token",
+      "job_object",
+      "fw_block_out"
+    ],
+    "limits": {
+      "timeout_s": 20,
+      "mem_mb": 512,
+      "cpu_s": 10,
+      "network": "blocked"
+    },
+    "started_at": "2026-10-24T10:35:01+08:00",
+    "ended_at": "2026-10-24T10:35:05+08:00",
+    "terminated_by": "exited"
+  },
+  "events": [
+    {
+      "id": "e00001",
+      "ts": 0.1,
+      "pid": 5000,
+      "ppid": 4990,
+      "image": "C:\\sandbox\\work\\demo_installer.exe",
+      "category": "process",
+      "action": "create",
+      "target": "C:\\sandbox\\work\\demo_installer.exe",
+      "args": {
+        "command_line": "demo_installer.exe /S"
+      },
+      "source": "etw:process",
+      "confidence": "high"
+    },
+    {
+      "id": "e00002",
+      "ts": 0.5,
+      "pid": 5000,
+      "image": "C:\\sandbox\\work\\demo_installer.exe",
+      "category": "file",
+      "action": "write",
+      "target": "C:\\Program Files\\TianTiDemo\\app.exe",
+      "args": {
+        "size": 204800
+      },
+      "source": "etw:file",
+      "confidence": "high"
+    },
+    {
+      "id": "e00003",
+      "ts": 0.7,
+      "pid": 5000,
+      "image": "C:\\sandbox\\work\\demo_installer.exe",
+      "category": "file",
+      "action": "write",
+      "target": "C:\\Program Files\\TianTiDemo\\core.dll",
+      "args": {
+        "size": 81920
+      },
+      "source": "etw:file",
+      "confidence": "high"
+    },
+    {
+      "id": "e00004",
+      "ts": 1.1,
+      "pid": 5000,
+      "image": "C:\\sandbox\\work\\demo_installer.exe",
+      "category": "registry",
+      "action": "set",
+      "target": "HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TianTiDemo",
+      "args": {
+        "value": "C:\\Program Files\\TianTiDemo\\app.exe"
+      },
+      "source": "etw:registry",
+      "confidence": "high"
+    },
+    {
+      "id": "e00005",
+      "ts": 1.6,
+      "pid": 5000,
+      "ppid": 4990,
+      "image": "C:\\sandbox\\work\\demo_installer.exe",
+      "category": "process",
+      "action": "create",
+      "target": "C:\\Program Files\\TianTiDemo\\app.exe",
+      "args": {
+        "command_line": "app.exe --first-run"
+      },
+      "source": "etw:process",
+      "confidence": "high"
+    },
+    {
+      "id": "e00006",
+      "ts": 2.2,
+      "pid": 5012,
+      "image": "C:\\Program Files\\TianTiDemo\\app.exe",
+      "category": "network",
+      "action": "connect",
+      "target": "104.18.32.7:443",
+      "args": {
+        "proto": "tcp",
+        "domain": "update.tiantidemo.example"
+      },
+      "source": "etw:network",
+      "confidence": "medium"
+    },
+    {
+      "id": "e00007",
+      "ts": 2.8,
+      "pid": 5012,
+      "image": "C:\\Program Files\\TianTiDemo\\app.exe",
+      "category": "file",
+      "action": "write",
+      "target": "C:\\Users\\Administrator\\AppData\\Local\\Temp\\tianti_install.log",
+      "args": {
+        "size": 1024
+      },
+      "source": "etw:file",
+      "confidence": "high"
+    },
+    {
+      "id": "e00008",
+      "ts": 3,
+      "pid": 5012,
+      "image": "C:\\Program Files\\TianTiDemo\\app.exe",
+      "category": "process",
+      "action": "exit",
+      "target": "C:\\Program Files\\TianTiDemo\\app.exe",
+      "args": {
+        "exit_code": 0
+      },
+      "source": "etw:process",
+      "confidence": "high"
+    }
+  ],
+  "summary": {
+    "processes": 2,
+    "threads": 0,
+    "file_writes": 3,
+    "file_drops": 0,
+    "reg_sets": 1,
+    "net_connects": 1,
+    "dns_queries": 0,
+    "services": 0,
+    "tasks": 0,
+    "apis": 0,
+    "first_seen": 0.1,
+    "event_count": 8,
+    "dropped": 0,
+    "truncated": false,
+    "dropped_files": []
+  }
+}
