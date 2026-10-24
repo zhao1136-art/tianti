@@ -63,7 +63,8 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 ```
 
 纯标准库 tkinter 实现，复用同一套 pipeline：选择文件/目录 → 自动判断（trace JSON 离线回放 / 其他文件沙箱执行）
-→ 结果表 + 能力/危险行为/时间线/原始 JSON 详情 → 一键生成 HTML 报告。离线回放不执行样本，也不会触发火绒。
+→ 结果表 + **批量汇总矩阵**（可导出 CSV）+ 能力/危险行为/时间线/原始 JSON 详情 → 一键生成 HTML 报告。
+扫描可随时「停止」并**强杀当前沙箱进程树**。离线回放不执行样本，也不会触发火绒。
 详见 [docs/GUI.md](docs/GUI.md)。
 
 ## 当前能力

@@ -9,7 +9,8 @@ from tianti.api import pipeline
 from tianti.gui import format as fmt
 from tianti.trace import schema
 
-TRACE = Path(__file__).resolve().parents[1] / "fixtures" / "traces" / "golden_ransom_sim.json"
+FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "traces"
+TRACE = FIXTURES / "golden_ransom_sim.json"
 
 
 class GuiFormatTests(unittest.TestCase):
@@ -72,6 +73,83 @@ class GuiFormatTests(unittest.TestCase):
         self.assertEqual(fmt._human_size(0), "0 B")
         self.assertEqual(fmt._human_size(2048), "2.0 KB")
 
+
+
+class BatchSummaryTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.ransom = pipeline.analyze_trace(schema.load(FIXTURES / "golden_ransom_sim.json"))
+        cls.injection = pipeline.analyze_trace(schema.load(FIXTURES / "golden_injection.json"))
+        cls.benign = pipeline.analyze_trace(schema.load(FIXTURES / "golden_benign_installer.json"))
+
+    def test_matrix_rows_sorted_by_score(self) -> None:
+        rows = fmt.matrix_rows([self.benign, self.ransom, self.injection])
+        self.assertEqual(len(rows), 3)
+        scores = [row["score"] for row in rows]
+        self.assertEqual(scores, sorted(scores, reverse=True))
+        self.assertEqual(rows[0]["verdict"], "malicious")
+        self.assertTrue(all(row["name"] for row in rows))
+
+    def test_summary_stats(self) -> None:
+        stats = fmt.summary_stats([self.ransom, self.injection, self.benign], errors=1, elapsed_s=2.5)
+        self.assertEqual(stats["total"], 3)
+        self.assertEqual(stats["malicious"], 2)
+        self.assertEqual(stats["suspicious"], 1)
+        self.assertEqual(stats["clean"], 0)
+        self.assertEqual(stats["errors"], 1)
+        self.assertGreater(stats["hits"], 0)
+        self.assertIn("TA0003", stats["tactics"])
+        line = fmt.stats_line(stats)
+        self.assertIn("共 3 个结果", line)
+        self.assertIn("失败 1 个文件", line)
+
+    def test_matrix_csv(self) -> None:
+        text = fmt.matrix_csv(fmt.matrix_rows([self.ransom]))
+        lines = text.strip().splitlines()
+        self.assertTrue(lines[0].startswith("name,verdict,score"))
+        self.assertIn(self.ransom.sample_name, lines[1])
+
+    def test_empty_summary(self) -> None:
+        stats = fmt.summary_stats([])
+        self.assertEqual(stats["total"], 0)
+        self.assertEqual(fmt.matrix_rows([]), [])
+
+
+class ForceKillTests(unittest.TestCase):
+    def _make_app(self):
+        try:
+            import tkinter as tk
+        except ImportError:  # pragma: no cover
+            self.skipTest("tkinter 不可用")
+        try:
+            root = tk.Tk()
+        except tk.TclError:  # pragma: no cover
+            self.skipTest("没有可用显示器")
+        root.withdraw()
+        from tianti.gui.app import TiantiApp
+
+        return root, TiantiApp(root)
+
+    def test_kill_process_tree(self) -> None:
+        import subprocess
+        import sys
+
+        root, app = self._make_app()
+        try:
+            proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+            self.assertIsNone(proc.poll())
+            app._kill_process_tree(proc)
+            proc.wait(timeout=10)
+            self.assertIsNotNone(proc.poll())
+        finally:
+            root.destroy()
+
+    def test_force_kill_without_process_returns_false(self) -> None:
+        root, app = self._make_app()
+        try:
+            self.assertFalse(app._force_kill_current())
+        finally:
+            root.destroy()
 
 class GuiWiringTests(unittest.TestCase):
     def test_cli_parser_has_gui_command(self) -> None:

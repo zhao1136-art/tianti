@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 from typing import Any, Iterable
 
@@ -219,3 +221,86 @@ def _techniques(entries: Iterable[str]) -> set[str]:
     for entry in entries:
         found.update(re.findall(r"\bT\d{4}(?:\.\d{3})?\b", str(entry)))
     return found
+
+
+# --------------------------------------------------------------------- 批量汇总
+def matrix_rows(results: Iterable[ScanResult]) -> list[dict[str, Any]]:
+    """多文件结果矩阵：一行一个样本，按分数降序。"""
+    rows: list[dict[str, Any]] = []
+    for result in results:
+        tactics = sorted(set(result.verdict.tactics))
+        techniques = sorted(set(result.verdict.techniques))
+        input_kind = str((result.extra or {}).get("input") or "-")
+        backend = str(((result.extra or {}).get("backend") or {}).get("backend") or "-")
+        rows.append(
+            {
+                "name": result.sample_name,
+                "verdict": result.verdict_name,
+                "verdict_label": verdict_label(result.verdict_name),
+                "score": float(result.verdict.score),
+                "confidence": float(result.verdict.confidence),
+                "matches": len(result.matches),
+                "hits": len(result.hits),
+                "tactics": ", ".join(tactics) or "-",
+                "techniques": ", ".join(techniques) or "-",
+                "input": input_kind,
+                "backend": backend,
+            }
+        )
+    rows.sort(key=lambda row: (-row["score"], row["name"]))
+    return rows
+
+
+def summary_stats(
+    results: Iterable[ScanResult], *, errors: int = 0, elapsed_s: float = 0.0, active_error_files: int = 0
+) -> dict[str, Any]:
+    items = list(results)
+    counts = {"clean": 0, "suspicious": 0, "malicious": 0}
+    for result in items:
+        counts[result.verdict_name] = counts.get(result.verdict_name, 0) + 1
+    scores = [float(result.verdict.score) for result in items]
+    tactics = sorted({tactic for result in items for tactic in result.verdict.tactics})
+    techniques = sorted({technique for result in items for technique in result.verdict.techniques})
+    return {
+        "total": len(items),
+        "clean": counts["clean"],
+        "suspicious": counts["suspicious"],
+        "malicious": counts["malicious"],
+        "errors": int(errors),
+        "avg_score": (sum(scores) / len(scores)) if scores else 0.0,
+        "max_score": max(scores) if scores else 0.0,
+        "matches": sum(len(result.matches) for result in items),
+        "hits": sum(len(result.hits) for result in items),
+        "tactics": tactics,
+        "techniques": techniques,
+        "elapsed_s": float(elapsed_s),
+    }
+
+
+def stats_line(stats: dict[str, Any]) -> str:
+    line = (
+        f"共 {stats['total']} 个结果：恶意 {stats['malicious']} / 可疑 {stats['suspicious']} / 干净 {stats['clean']}"
+        f"    平均分 {stats['avg_score']:.1f}  最高分 {stats['max_score']:.1f}"
+        f"    能力命中 {stats['matches']}  危险行为 {stats['hits']}"
+    )
+    extras: list[str] = []
+    if stats.get("elapsed_s"):
+        extras.append(f"耗时 {stats['elapsed_s']:.1f}s")
+    if stats.get("errors"):
+        extras.append(f"失败 {stats['errors']} 个文件")
+    if extras:
+        line += "    " + "  ".join(extras)
+    if stats.get("tactics"):
+        line += "\n覆盖战术: " + ", ".join(stats["tactics"])
+    return line
+
+
+def matrix_csv(rows: Iterable[dict[str, Any]]) -> str:
+    """把矩阵行导出为 CSV 文本（UTF-8 BOM 由调用方决定是否加）。"""
+    fields = ["name", "verdict", "score", "confidence", "matches", "hits", "tactics", "techniques", "input", "backend"]
+    buffer = io.StringIO()
+    writer = csv.DictWriter(buffer, fieldnames=fields, extrasaction="ignore")
+    writer.writeheader()
+    for row in rows:
+        writer.writerow(row)
+    return buffer.getvalue()

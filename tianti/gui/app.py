@@ -12,7 +12,12 @@ from __future__ import annotations
 import argparse
 import os
 import queue
+import shutil
+import subprocess
+import sys
+import tempfile
 import threading
+import time
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -23,12 +28,16 @@ from .. import __version__
 from ..api import pipeline
 from ..core.config import Config
 from ..core.errors import TiantiError
-from ..report import ScanResult, save_html, save_result
+from ..report import ScanResult, load_result, save_html, save_result
 from ..trace import schema
 from . import format as fmt
 
 MAX_DIR_FILES = 100
 TITLE = "天体引擎 TianTi — 沙箱行为分析"
+
+
+class _Cancelled(Exception):
+    """用户停止导致当前文件分析被强杀。"""
 COLORS = {
     "bg": "#f2f4f7",
     "panel": "#ffffff",
@@ -55,6 +64,11 @@ class TiantiApp:
         self._cap_rows: list[dict[str, Any]] = []
         self._det_rows: list[dict[str, Any]] = []
         self._sig_rows: list[dict[str, Any]] = []
+        self.errors: list[dict[str, str]] = []
+        self._matrix_map: dict[str, ScanResult] = {}
+        self.current_proc: "subprocess.Popen[str] | None" = None
+        self._proc_lock = threading.Lock()
+        self._batch_started = 0.0
 
         self.root.title(TITLE)
         self.root.geometry("1460x860")
@@ -175,6 +189,8 @@ class TiantiApp:
         self.html_button = ttk.Button(row3, text="打开 HTML 报告", command=self.open_html, state="disabled")
         self.html_button.pack(side="left", padx=6)
         ttk.Button(row3, text="打开输出目录", command=self.open_output_dir).pack(side="left", padx=6)
+        self.clear_button = ttk.Button(row3, text="清空结果", command=self.clear_results)
+        self.clear_button.pack(side="left", padx=6)
         ttk.Label(
             row3, text="提示：离线回放不会执行样本，适合反复调规则；沙箱执行受火绒 HIPS 监控可能弹窗。",
             foreground=COLORS["muted"],
@@ -207,6 +223,8 @@ class TiantiApp:
         self.notebook = ttk.Notebook(right)
         self.notebook.pack(fill="both", expand=True)
 
+        self._build_summary_tab()
+
         self.summary_text = self._add_text_tab("摘要")
         self.cap_tree, self.cap_frame = self._add_tree_tab("能力", ("name", "namespace", "attck", "techniques", "evidence"), ("规则", "命名空间", "ATT&CK", "技术", "证据数"), (190, 170, 260, 90, 60))
         self.det_tree, self.det_frame = self._add_tree_tab("危险行为", ("name", "severity", "score", "tactic", "technique", "evidence"), ("检测器", "严重度", "分数", "战术", "技术", "证据数"), (200, 70, 70, 80, 90, 60))
@@ -223,6 +241,135 @@ class TiantiApp:
                       "· 其他文件走 containment 沙箱（受限令牌 + 低完整性 + 断网 + 超时强杀）；\n" \
                       "· 需要上游 capa 规则时勾选「加载上游规则」。"
         self._set_text(self.summary_text, placeholder)
+
+
+    # ------------------------------------------------------------------ 汇总
+    def _build_summary_tab(self) -> None:
+        frame = ttk.Frame(self.notebook)
+        self.notebook.add(frame, text="汇总")
+        top = ttk.Frame(frame)
+        top.pack(fill="x", pady=(4, 6))
+        self.matrix_summary_var = tk.StringVar(value="尚无结果：扫描后这里显示批量结果矩阵与统计。")
+        ttk.Label(top, textvariable=self.matrix_summary_var, justify="left").pack(side="left")
+        ttk.Button(top, text="导出汇总 CSV", command=self.export_summary_csv).pack(side="right")
+        columns = ("name", "verdict", "score", "confidence", "matches", "hits", "tactics")
+        headings = ("文件", "判定", "分数", "置信度", "能力", "危险行为", "战术")
+        widths = (250, 70, 70, 70, 60, 70, 260)
+        self.matrix_tree = ttk.Treeview(frame, columns=columns, show="headings", selectmode="browse")
+        for column, heading, width in zip(columns, headings, widths):
+            self.matrix_tree.heading(column, text=heading)
+            self.matrix_tree.column(column, width=width, anchor="w")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.matrix_tree.yview)
+        self.matrix_tree.configure(yscrollcommand=scroll.set)
+        self.matrix_tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="left", fill="y")
+        self.matrix_tree.tag_configure("malicious", foreground=COLORS["malicious"])
+        self.matrix_tree.tag_configure("suspicious", foreground=COLORS["suspicious"])
+        self.matrix_tree.tag_configure("clean", foreground=COLORS["clean"])
+        self.matrix_tree.bind("<<TreeviewSelect>>", self._on_matrix_select)
+
+    def _refresh_summary(self, *, elapsed_s: float = 0.0) -> None:
+        ordered = sorted(
+            self.results.items(), key=lambda item: (-float(item[1].verdict.score), item[1].sample_name)
+        )
+        for item in self.matrix_tree.get_children():
+            self.matrix_tree.delete(item)
+        self._matrix_map = {}
+        for index, (_iid, result) in enumerate(ordered):
+            iid = f"m{index}"
+            self._matrix_map[iid] = result
+            self.matrix_tree.insert(
+                "", "end", iid=iid,
+                values=(
+                    result.sample_name,
+                    fmt.verdict_label(result.verdict_name),
+                    f"{float(result.verdict.score):.2f}",
+                    f"{float(result.verdict.confidence) * 100:.0f}%",
+                    len(result.matches),
+                    len(result.hits),
+                    ", ".join(result.verdict.tactics) or "-",
+                ),
+                tags=(result.verdict_name,),
+            )
+        elapsed = elapsed_s or (time.monotonic() - self._batch_started if self._batch_started else 0.0)
+        stats = fmt.summary_stats(
+            [result for _, result in ordered], errors=len(self.errors), elapsed_s=elapsed
+        )
+        if stats["total"]:
+            self.matrix_summary_var.set(fmt.stats_line(stats))
+        else:
+            self.matrix_summary_var.set("尚无结果：扫描后这里显示批量结果矩阵与统计。")
+
+    def _on_matrix_select(self, _event: Any = None) -> None:
+        selection = self.matrix_tree.selection()
+        if not selection:
+            return
+        result = self._matrix_map.get(selection[0])
+        if result is None:
+            return
+        for iid, candidate in self.results.items():
+            if candidate is result:
+                self.tree.selection_set(iid)
+                self.tree.see(iid)
+                break
+        self._show_result(result)
+
+    def _finish_batch(self) -> None:
+        elapsed = time.monotonic() - self._batch_started if self._batch_started else 0.0
+        self._refresh_summary(elapsed_s=elapsed)
+        stats = fmt.summary_stats(list(self.results.values()), errors=len(self.errors), elapsed_s=elapsed)
+        summary = (
+            f"完成：{stats['total']} 个结果，恶意 {stats['malicious']} / 可疑 {stats['suspicious']} / 干净 {stats['clean']}"
+        )
+        if self.errors:
+            summary += f"，失败 {len(self.errors)} 个文件"
+        self.status_var.set(summary)
+        if stats["total"]:
+            self.notebook.select(0)
+        self.count_var.set(f"结果：{stats['total']}    失败：{len(self.errors)}")
+
+    def clear_results(self) -> None:
+        if self.scanning:
+            return
+        self.results.clear()
+        self.errors.clear()
+        self._matrix_map.clear()
+        self._batch_started = 0.0
+        for iid in self.tree.get_children():
+            self.tree.delete(iid)
+        for iid in self.matrix_tree.get_children():
+            self.matrix_tree.delete(iid)
+        for tree in (self.cap_tree, self.det_tree, self.signal_tree):
+            for iid in tree.get_children():
+                tree.delete(iid)
+        for widget in (self.timeline_text, self.raw_text, self.notes_text):
+            self._set_text(widget, "")
+        self._set_text(self.summary_text, "在左侧选择一条扫描结果查看详情。")
+        self.matrix_summary_var.set("尚无结果：扫描后这里显示批量结果矩阵与统计。")
+        self.count_var.set("结果：0    失败：0")
+        self.status_var.set("已清空结果")
+
+    def export_summary_csv(self) -> None:
+        if not self.results:
+            messagebox.showinfo("没有结果", "先扫描出结果再导出汇总。")
+            return
+        out_dir = self.config.paths.out / "gui"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = filedialog.asksaveasfilename(
+            title="导出汇总 CSV",
+            defaultextension=".csv",
+            initialdir=str(out_dir),
+            initialfile="summary.csv",
+            filetypes=[("CSV", "*.csv")],
+        )
+        if not path:
+            return
+        try:
+            Path(path).write_text("\ufeff" + fmt.matrix_csv(fmt.matrix_rows(self.results.values())), encoding="utf-8")
+        except OSError as exc:
+            messagebox.showerror("导出失败", str(exc))
+            return
+        self.status_var.set(f"汇总已导出：{path}")
 
     def _add_text_tab(self, title: str) -> scrolledtext.ScrolledText:
         frame = ttk.Frame(self.notebook)
@@ -295,6 +442,8 @@ class TiantiApp:
             return
 
         self.cancel_requested.clear()
+        self.errors.clear()
+        self._batch_started = time.monotonic()
         self._set_scanning(True)
         self.status_var.set(f"准备扫描 {len(files)} 个文件…")
         thread = threading.Thread(
@@ -306,7 +455,11 @@ class TiantiApp:
 
     def request_stop(self) -> None:
         self.cancel_requested.set()
-        self.status_var.set("已请求停止（当前样本需等本次执行结束）…")
+        killed = self._force_kill_current()
+        if killed:
+            self.status_var.set("已强杀当前沙箱进程，等待收尾…")
+        else:
+            self.status_var.set("已请求停止（当前没有正在运行的沙箱进程）…")
 
     def _collect_targets(self, target: Path) -> list[Path]:
         if target.is_file():
@@ -317,17 +470,31 @@ class TiantiApp:
     def _worker(self, files: list[Path], mode: str, policy: str, include_upstream: bool) -> None:
         for index, path in enumerate(files, start=1):
             if self.cancel_requested.is_set():
-                self.queue.put(("status", "已停止"))
+                self.queue.put(("stopped", None))
                 break
             self.queue.put(("status", f"[{index}/{len(files)}] 正在分析 {path.name} …"))
             try:
-                result = self._analyze_one(path, mode, policy, include_upstream)
+                result = self._analyze_one(
+                    path, mode, policy, include_upstream, index=index, total=len(files)
+                )
                 self.queue.put(("row", result))
+            except _Cancelled:
+                self.queue.put(("stopped", None))
+                break
             except Exception as exc:  # 单文件失败不中断整批
-                self.queue.put(("error", f"{path.name}: {exc}"))
+                self.queue.put(("error", (path.name, str(exc))))
         self.queue.put(("done", None))
 
-    def _analyze_one(self, path: Path, mode: str, policy: str, include_upstream: bool) -> ScanResult:
+    def _analyze_one(
+        self,
+        path: Path,
+        mode: str,
+        policy: str,
+        include_upstream: bool,
+        *,
+        index: int = 1,
+        total: int = 1,
+    ) -> ScanResult:
         is_trace = path.suffix.lower() == ".json" and _looks_like_trace(path)
         replay = mode == "replay" or (mode == "auto" and is_trace)
         if replay:
@@ -337,7 +504,81 @@ class TiantiApp:
             result.extra["input"] = "replay"
             result.extra["source_path"] = str(path)
             return result
-        return pipeline.scan_path(path, policy=policy, config=self.config, include_upstream=include_upstream)
+        return self._run_cli_scan(path, policy, include_upstream, index=index, total=total)
+
+    def _run_cli_scan(
+        self, path: Path, policy: str, include_upstream: bool, *, index: int, total: int
+    ) -> ScanResult:
+        """沙箱扫描放到子进程执行，便于「停止」时整棵进程树强杀。"""
+        tmp = Path(tempfile.mkdtemp(prefix="tianti_gui_"))
+        command = [
+            sys.executable, "-m", "tianti", "scan", str(path),
+            "--policy", policy, "--format", "json", "--out", str(tmp),
+        ]
+        if include_upstream:
+            command.append("--include-upstream")
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        proc = subprocess.Popen(
+            command,
+            cwd=str(self.config.paths.root),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=creationflags,
+        )
+        with self._proc_lock:
+            self.current_proc = proc
+        started = time.monotonic()
+        try:
+            while proc.poll() is None:
+                if self.cancel_requested.is_set():
+                    self._kill_process_tree(proc)
+                    raise _Cancelled()
+                elapsed = time.monotonic() - started
+                self.queue.put(("status", f"[{index}/{total}] 沙箱执行 {path.name} … {elapsed:.1f}s"))
+                time.sleep(0.2)
+            stdout, stderr = proc.communicate()
+        finally:
+            with self._proc_lock:
+                self.current_proc = None
+        if proc.returncode != 0:
+            lines = (stderr or stdout or "").strip().splitlines()
+            raise RuntimeError("CLI 扫描失败: " + (lines[-1] if lines else f"退出码 {proc.returncode}"))
+        candidates = sorted(tmp.glob("*.result.json"))
+        if not candidates:
+            raise RuntimeError("CLI 未产出结果文件")
+        result = load_result(candidates[0])
+        shutil.rmtree(tmp, ignore_errors=True)
+        return result
+
+    def _kill_process_tree(self, proc: "subprocess.Popen[str]") -> None:
+        if proc.poll() is not None:
+            return
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                capture_output=True, text=True, timeout=15, creationflags=creationflags,
+            )
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+    def _force_kill_current(self) -> bool:
+        with self._proc_lock:
+            proc = self.current_proc
+        if proc is None or proc.poll() is not None:
+            return False
+        self._kill_process_tree(proc)
+        return True
 
     # ------------------------------------------------------------------ 队列
     def _poll_queue(self) -> None:
@@ -349,10 +590,15 @@ class TiantiApp:
                 elif kind == "row":
                     self._add_row(payload)
                 elif kind == "error":
-                    self.status_var.set(f"错误：{payload}")
+                    name, message = payload
+                    self.errors.append({"file": str(name), "error": str(message)})
+                    self.status_var.set(f"错误：{name}: {message}")
+                    self._refresh_summary()
+                elif kind == "stopped":
+                    self.status_var.set("已停止：当前沙箱进程已强杀")
                 elif kind == "done":
                     self._set_scanning(False)
-                    self.status_var.set(f"完成，共 {len(self.results)} 个结果")
+                    self._finish_batch()
         except queue.Empty:
             pass
         self.root.after(120, self._poll_queue)
@@ -375,6 +621,7 @@ class TiantiApp:
         )
         self.tree.selection_set(iid)
         self._show_result(result)
+        self._refresh_summary()
         self.count_var.set(f"结果：{len(self.results)}")
 
     def _set_scanning(self, scanning: bool) -> None:
@@ -382,6 +629,7 @@ class TiantiApp:
         self.start_button.configure(state="disabled" if scanning else "normal")
         self.stop_button.configure(state="normal" if scanning else "disabled")
         self.html_button.configure(state="disabled" if scanning else "normal")
+        self.clear_button.configure(state="disabled" if scanning else "normal")
         if scanning:
             self.progress.start(12)
         else:
@@ -589,10 +837,18 @@ def main(argv: list[str] | None = None) -> int:
     try:
         app = TiantiApp(root, initial_path=args.path)
         if args.demo:
-            trace_path = Path(args.trace) if args.trace else (
-                app.config.paths.root / "tests" / "fixtures" / "traces" / "golden_ransom_sim.json"
-            )
-            app.load_demo_trace(trace_path)
+            fixtures = app.config.paths.root / "tests" / "fixtures" / "traces"
+            if args.trace:
+                paths = [Path(args.trace)]
+            else:
+                paths = [
+                    fixtures / "golden_ransom_sim.json",
+                    fixtures / "golden_injection.json",
+                    fixtures / "golden_benign_installer.json",
+                ]
+            for trace_path in paths:
+                app.load_demo_trace(trace_path)
+            app.notebook.select(0)
         if args.smoke:
             root.withdraw()
             root.update_idletasks()
