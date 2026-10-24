@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '直连裸 IP 地址'
+    namespace: 'network/connect/raw-ip'
+    scope: 'process'
+    authors: [tianti]
+    description: '不经过域名解析直接连接裸 IP，可能规避域名信誉检测'
+    att&ck:
+      - 'Command and Control::Application Layer Protocol [T1071]'
+  features:
+    - and:
+      - network connect
+      - string: '/^\d{1,3}(\.\d{1,3}){3}(:\d+)?$/'

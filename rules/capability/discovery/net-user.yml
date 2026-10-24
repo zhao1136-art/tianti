@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '枚举本地用户与用户组'
+    namespace: 'discovery/host/net-user'
+    scope: 'process'
+    authors: [tianti]
+    description: '使用 net user/group/localgroup 枚举账户'
+    att&ck:
+      - 'Discovery::Account Discovery Local Account [T1087.001]'
+  features:
+    - or:
+      - process create: '*\net.exe'
+      - string: '/\bnet\s+(user|group|localgroup)\b/i'

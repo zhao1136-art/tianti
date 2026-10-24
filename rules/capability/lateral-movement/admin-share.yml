@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '通过管理共享横向移动'
+    namespace: 'lateral-movement/smb/admin-share'
+    scope: 'process'
+    authors: [tianti]
+    description: '访问 ADMIN$/C$ 或使用 psexec/net use 连接远程主机'
+    att&ck:
+      - 'Lateral Movement::Remote Services SMB/Windows Admin Shares [T1021.002]'
+  features:
+    - or:
+      - string: '/\\\\[a-z0-9$._-]+\\(admin\$|c\$)/i'
+      - process create: '*\psexec.exe'
+      - string: '/net\s+use\s+\\\\/i'

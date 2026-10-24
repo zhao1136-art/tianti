@@ -1,0 +1,20 @@
+# C2：外联公网 IP / 非常用端口
+detector: c2_connect
+name: 外联 C2（公网 IP、非常用端口或无域名）
+tactic: TA0011
+technique: T1071
+severity: high
+score: 18
+match:
+  all:
+    - category: network
+      action: connect
+    - any:
+        - ip_public: true
+          port_not_in: [80, 443, 53, 8080]
+        - ip_public: true
+          arg_missing: [domain]
+suppress:
+  - image_glob: ['*\program files\*', '*\program files (x86)\*']
+    reason: 已安装程序非常用端口外联（签名占位），降权
+evidence: events

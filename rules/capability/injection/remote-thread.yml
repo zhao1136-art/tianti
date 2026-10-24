@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '远程进程注入并创建远程线程'
+    namespace: 'injection/remote-thread'
+    scope: 'process'
+    authors: [tianti]
+    description: '在目标进程分配并写入内存后创建远程线程执行载荷'
+    att&ck:
+      - 'Defense Evasion::Process Injection [T1055]'
+  features:
+    - and:
+      - allocate memory
+      - write memory
+      - remote thread

@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '设置 IFEO 调试器劫持'
+    namespace: 'persistence/registry/ifeo'
+    scope: 'process'
+    authors: [tianti]
+    description: '通过 Image File Execution Options Debugger 劫持进程启动'
+    att&ck:
+      - 'Persistence::Boot or Logon Autostart Execution [T1547]'
+  features:
+    - registry set: '*\image file execution options\*'

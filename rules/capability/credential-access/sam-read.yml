@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '读取 SAM/SECURITY 注册表配置单元'
+    namespace: 'credential-access/sam-read'
+    scope: 'process'
+    authors: [tianti]
+    description: '读取或导出 SAM/SECURITY 以窃取本地账户散列'
+    att&ck:
+      - 'Credential Access::OS Credential Dumping SAM [T1003.002]'
+  features:
+    - or:
+      - file read: '*\config\sam'
+      - file read: '*\config\security'
+      - api: RegSaveKey

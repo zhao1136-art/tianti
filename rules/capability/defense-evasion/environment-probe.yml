@@ -1,0 +1,15 @@
+rule:
+  meta:
+    name: '探测虚拟化与沙箱环境'
+    namespace: 'defense-evasion/environment-probe'
+    scope: 'process'
+    authors: [tianti]
+    description: '查询 VBox/VMware 注册表键或相关进程识别分析环境'
+    att&ck:
+      - 'Defense Evasion::Virtualization/Sandbox Evasion System Checks [T1497.001]'
+  features:
+    - or:
+      - registry query: '*\vbox*'
+      - registry query: '*\vmware*'
+      - process create: '*\vmtoolsd.exe'
+      - process create: '*\vboxservice.exe'

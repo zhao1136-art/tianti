@@ -1,0 +1,15 @@
+rule:
+  meta:
+    name: '关闭 Windows Defender 防护'
+    namespace: 'defense-evasion/defender-disable'
+    scope: 'process'
+    authors: [tianti]
+    description: '通过注册表或 Set-MpPreference 关闭实时保护'
+    att&ck:
+      - 'Defense Evasion::Impair Defenses Disable or Modify Tools [T1562.001]'
+  features:
+    - or:
+      - registry set: '*\disableantispyware*'
+      - registry set: '*\disablerealtimemonitoring*'
+      - string: '/set-mppreference/i'
+      - defender

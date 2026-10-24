@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: 'ATT&CK T1490 破坏系统恢复'
+    namespace: 'attack/impact/inhibit-recovery'
+    scope: 'process'
+    authors: [tianti]
+    description: 'ATT&CK 视角的卷影副本删除'
+    att&ck:
+      - 'Impact::Inhibit System Recovery [T1490]'
+  features:
+    - string: '/vssadmin(\.exe)?\s+delete\s+shadows/i'

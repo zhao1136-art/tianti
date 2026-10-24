@@ -1,0 +1,19 @@
+# 持久化：启动目录投放
+detector: startup_folder_drop
+name: 启动目录投放
+tactic: TA0003
+technique: T1547.001
+severity: high
+score: 18
+match:
+  any:
+    - category: file
+      action: [create, write]
+      target: '*\Startup\*'
+    - category: registry
+      action: [set, create]
+      target: '*\Explorer\Shell Folders*Startup*'
+suppress:
+  - image_glob: ['*\program files\*', '*\program files (x86)\*']
+    reason: 安装程序写入启动目录（签名占位），降权
+evidence: events

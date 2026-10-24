@@ -1,0 +1,32 @@
+# 防御规避：进程注入链（sequence + aggregate）
+# 语义：同一窗口内 远程内存分配 -> 内存写 -> 远程线程创建，且对目标进程有聚合证据。
+detector: process_injection
+name: 进程注入链（远程内存写 + 远程线程）
+tactic: TA0005
+technique: T1055
+severity: critical
+score: 30
+window_s: 8
+match:
+  all:
+    - sequence:
+        steps:
+          - category: memory
+            action: alloc
+          - any:
+              - category: memory
+                action: write
+              - category: api
+                action: call
+                arg:
+                  api: WriteProcessMemory
+          - category: thread
+            action: remote_create
+        within_s: 8
+    - aggregate:
+        distinct: [target]
+        count: '>= 1'
+        of:
+          category: memory
+          action: [alloc, write]
+evidence: events

@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '绕过或打补丁 ETW'
+    namespace: 'defense-evasion/etw-patch'
+    scope: 'process'
+    authors: [tianti]
+    description: '修改 ETW 事件写入降低行为可见性'
+    att&ck:
+      - 'Defense Evasion::Impair Defenses Disable or Modify Tools [T1562.001]'
+  features:
+    - or:
+      - etw
+      - api: EtwEventWrite
+      - api: NtTraceEvent

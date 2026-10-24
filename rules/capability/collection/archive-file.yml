@@ -1,0 +1,15 @@
+rule:
+  meta:
+    name: '生成压缩包文件'
+    namespace: 'collection/staging/archive-file'
+    scope: 'process'
+    authors: [tianti]
+    description: '落地 zip/rar/7z 压缩包用于暂存或外传'
+    att&ck:
+      - 'Collection::Archive Collected Data [T1560]'
+  features:
+    - or:
+      - file write: '*.zip'
+      - file write: '*.rar'
+      - file write: '*.7z'
+      - file create: '*.zip'

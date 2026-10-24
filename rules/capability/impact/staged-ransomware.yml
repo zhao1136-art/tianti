@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '勒索行为组合（卷影删除加批量加密）'
+    namespace: 'impact/ransomware/staged-behavior'
+    scope: 'process'
+    authors: [tianti]
+    description: '同一进程内同时具备卷影删除与批量高熵写入能力'
+    att&ck:
+      - 'Impact::Data Encrypted for Impact [T1486]'
+  features:
+    - and:
+      - match: '删除卷影副本或禁用恢复'
+      - match: '批量高熵文件写入'

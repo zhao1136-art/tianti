@@ -1,0 +1,13 @@
+# 发现：主机/账号发现
+detector: recon_commands
+name: 主机与账号发现命令
+tactic: TA0007
+technique: T1082
+severity: medium
+score: 5
+match:
+  category: process
+  action: create
+  arg:
+    command_line: ['*whoami*', '*net user*', '*net group*', '*net localgroup*', '*systeminfo*', '*ipconfig /all*', '*nltest*', '*net view*', '*quser*']
+evidence: events

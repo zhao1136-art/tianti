@@ -1,0 +1,18 @@
+# 防御规避：清除日志
+detector: log_clearing
+name: 清除事件日志
+tactic: TA0005
+technique: T1070.001
+severity: high
+score: 16
+match:
+  any:
+    - category: process
+      action: create
+      arg:
+        command_line: ['*wevtutil*cl*', '*wevtutil*clear-log*', '*Clear-EventLog*', '*Remove-EventLog*']
+    - category: api
+      action: call
+      arg:
+        api: ['ClearEventLog*', 'EvtClearLog*']
+evidence: events

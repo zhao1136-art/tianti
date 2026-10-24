@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '清除事件日志'
+    namespace: 'defense-evasion/log-clear'
+    scope: 'process'
+    authors: [tianti]
+    description: '使用 wevtutil/Clear-EventLog 清除安全日志痕迹'
+    att&ck:
+      - 'Defense Evasion::Indicator Removal Clear Windows Event Logs [T1070.001]'
+  features:
+    - or:
+      - process create: '*\wevtutil.exe'
+      - string: '/wevtutil\s+cl/i'
+      - string: '/clear-eventlog/i'

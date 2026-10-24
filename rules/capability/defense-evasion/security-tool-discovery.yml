@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '枚举安全防护进程'
+    namespace: 'defense-evasion/security-tool-discovery'
+    scope: 'process'
+    authors: [tianti]
+    description: '使用 tasklist/findstr 枚举杀软与监控进程'
+    att&ck:
+      - 'Discovery::Process Discovery [T1057]'
+  features:
+    - or:
+      - process create: '*\tasklist.exe'
+      - process create: '*\findstr.exe'
+      - string: '/\btasklist\b/i'

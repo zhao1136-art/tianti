@@ -1,0 +1,19 @@
+# 持久化：Winlogon / Userinit 篡改（critical）
+detector: winlogon_userinit
+name: Winlogon/Userinit 篡改
+tactic: TA0003
+technique: T1547.004
+severity: critical
+score: 26
+match:
+  any:
+    - category: registry
+      action: [set, create]
+      target: '*\Winlogon\Userinit'
+    - category: registry
+      action: [set, create]
+      target: '*\Winlogon\Shell'
+    - category: registry
+      action: [set, create]
+      target: '*\Winlogon\Notify*'
+evidence: events

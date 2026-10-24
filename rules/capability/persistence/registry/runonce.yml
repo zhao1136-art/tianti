@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '写入 RunOnce 键实现单次自启动'
+    namespace: 'persistence/registry/runonce'
+    scope: 'process'
+    authors: [tianti]
+    description: '通过 CurrentVersion RunOnce 键注册登录时执行项'
+    att&ck:
+      - 'Persistence::Registry Run Keys / Startup Folder [T1547.001]'
+  features:
+    - registry set: '*\currentversion\runonce*'

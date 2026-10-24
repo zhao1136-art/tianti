@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: 'ATT&CK T1497 虚拟化环境探测'
+    namespace: 'attack/defense-evasion/vm-probe'
+    scope: 'process'
+    authors: [tianti]
+    description: 'ATT&CK 视角的虚拟化环境检测'
+    att&ck:
+      - 'Defense Evasion::Virtualization/Sandbox Evasion System Checks [T1497.001]'
+  features:
+    - or:
+      - registry query: '*\vbox*'
+      - registry query: '*\vmware*'

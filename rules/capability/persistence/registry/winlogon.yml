@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '篡改 Winlogon 注册表'
+    namespace: 'persistence/registry/winlogon'
+    scope: 'process'
+    authors: [tianti]
+    description: '修改 Winlogon Userinit/Shell 实现登录时执行'
+    att&ck:
+      - 'Persistence::Boot or Logon Autostart Execution Winlogon [T1547.004]'
+  features:
+    - registry set: '*\winlogon\*'

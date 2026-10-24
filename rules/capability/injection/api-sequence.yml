@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: 'VirtualAllocEx 加 WriteProcessMemory 注入序列'
+    namespace: 'injection/api-sequence'
+    scope: 'process'
+    authors: [tianti]
+    description: '调用 VirtualAllocEx/WriteProcessMemory/CreateRemoteThread 完成注入'
+    att&ck:
+      - 'Defense Evasion::Process Injection [T1055]'
+  features:
+    - and:
+      - api: VirtualAllocEx
+      - api: WriteProcessMemory
+      - remote thread

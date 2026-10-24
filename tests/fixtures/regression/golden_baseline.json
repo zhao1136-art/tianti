@@ -1,0 +1,57 @@
+{
+  "schema": "tianti.qa.baseline/1",
+  "generated_at": "2026-10-24T13:22:44+08:00",
+  "generated_by": "python -m unittest tests.integration.test_regression.CliReplayRegression.test_baseline_stability",
+  "source": "tianti.result/1 CLI replay 实测固化；评分/规则/检测器语义变更须由 owner 通知 QA 后重新固化",
+  "traces": {
+    "golden_benign_installer.json": {
+      "verdict": "suspicious",
+      "score": 15.0,
+      "rules": [
+        "直连裸 IP 地址"
+      ],
+      "detectors": []
+    },
+    "golden_injection.json": {
+      "verdict": "malicious",
+      "score": 107.6,
+      "rules": [
+        "ATT&CK T1562.001 关闭或绕过安全工具",
+        "VirtualAllocEx 加 WriteProcessMemory 注入序列",
+        "删除自身可执行文件",
+        "直连裸 IP 地址",
+        "绕过或打补丁 AMSI",
+        "远程进程注入并创建远程线程"
+      ],
+      "detectors": [
+        "amsi_etw_patch",
+        "c2_connect",
+        "process_injection"
+      ]
+    },
+    "golden_ransom_sim.json": {
+      "verdict": "malicious",
+      "score": 182.35,
+      "rules": [
+        "ATT&CK T1059.001 PowerShell 执行",
+        "ATT&CK T1071 非标准端口 C2",
+        "ATT&CK T1490 破坏系统恢复",
+        "ATT&CK T1547.001 Run 键持久化",
+        "写入 Run 键实现自启动",
+        "创建命令行或脚本解释器子进程",
+        "删除卷影副本或禁用恢复",
+        "加密后删除原始文件",
+        "勒索行为组合（卷影删除加批量加密）",
+        "外联非标准端口",
+        "批量高熵文件写入",
+        "直连裸 IP 地址",
+        "绕过 PowerShell 执行策略"
+      ],
+      "detectors": [
+        "c2_connect",
+        "run_key_persistence",
+        "shadow_copy_delete"
+      ]
+    }
+  }
+}

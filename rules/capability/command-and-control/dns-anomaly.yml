@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '异常 DNS 长域名查询'
+    namespace: 'command-and-control/dns/anomaly'
+    scope: 'process'
+    authors: [tianti]
+    description: '查询超长标签域名，疑似 DNS 隧道或 DGA'
+    att&ck:
+      - 'Command and Control::Application Layer Protocol DNS [T1071.004]'
+  features:
+    - and:
+      - network dns
+      - string: '/[a-z0-9]{25,}/i'

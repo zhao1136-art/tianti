@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '收集主机与网络配置'
+    namespace: 'discovery/system-info'
+    scope: 'process'
+    authors: [tianti]
+    description: '执行 systeminfo/ipconfig/nltest 收集主机信息'
+    att&ck:
+      - 'Discovery::System Information Discovery [T1082]'
+  features:
+    - or:
+      - process create: '*\systeminfo.exe'
+      - process create: '*\ipconfig.exe'
+      - process create: '*\nltest.exe'

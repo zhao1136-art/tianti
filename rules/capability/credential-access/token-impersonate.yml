@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '窃取或模拟访问令牌'
+    namespace: 'credential-access/token-impersonate'
+    scope: 'process'
+    authors: [tianti]
+    description: '复制或模拟高权限令牌提升权限'
+    att&ck:
+      - 'Privilege Escalation::Access Token Manipulation [T1134]'
+  features:
+    - token impersonate

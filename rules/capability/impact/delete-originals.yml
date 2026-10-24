@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '加密后删除原始文件'
+    namespace: 'impact/ransomware/delete-originals'
+    scope: 'process'
+    authors: [tianti]
+    description: '批量高熵写入后删除原始文件，典型勒索行为'
+    att&ck:
+      - 'Impact::Data Encrypted for Impact [T1486]'
+  features:
+    - and:
+      - count(delete file): 1 or more
+      - count(write high entropy file): 3 or more

@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '删除自身可执行文件'
+    namespace: 'defense-evasion/self-delete'
+    scope: 'process'
+    authors: [tianti]
+    description: '运行后删除可执行文件以清除落地痕迹'
+    att&ck:
+      - 'Defense Evasion::Indicator Removal File Deletion [T1070.004]'
+  features:
+    - delete file: '*.exe'

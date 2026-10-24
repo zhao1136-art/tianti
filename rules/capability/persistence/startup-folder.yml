@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '在启动目录投放文件'
+    namespace: 'persistence/startup-folder'
+    scope: 'process'
+    authors: [tianti]
+    description: '向用户或全局 Startup 目录写入可执行内容实现自启动'
+    att&ck:
+      - 'Persistence::Registry Run Keys / Startup Folder [T1547.001]'
+  features:
+    - or:
+      - file write: '*\startup\*'
+      - file create: '*\startup\*'

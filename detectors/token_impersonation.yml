@@ -1,0 +1,16 @@
+# 提权：令牌窃取/模拟
+detector: token_impersonation
+name: 令牌窃取或模拟
+tactic: TA0004
+technique: T1134
+severity: high
+score: 18
+match:
+  any:
+    - category: token
+      action: [impersonate, elevate]
+    - category: api
+      action: call
+      arg:
+        api: ['ImpersonateLoggedOnUser', 'SetThreadToken', 'DuplicateToken*', 'CreateProcessWithTokenW', 'CreateProcessAsUser*', 'LogonUser*']
+evidence: events

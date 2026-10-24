@@ -1,0 +1,26 @@
+# 防御规避：关闭 Defender / 加排除项
+detector: defender_tamper
+name: 关闭或削弱 Windows Defender
+tactic: TA0005
+technique: T1562.001
+severity: high
+score: 18
+match:
+  any:
+    - category: registry
+      action: [set, create]
+      target: '*\Windows Defender\*'
+      arg:
+        value_name: 'Disable*'
+    - category: registry
+      action: [set, create]
+      target: '*\Windows Defender\Exclusions\*'
+    - category: process
+      action: create
+      arg:
+        command_line: ['*Set-MpPreference*Disable*', '*Set-MpPreference*Exclusion*', '*Add-MpPreference*Exclusion*', '*MpCmdRun*']
+    - category: api
+      action: call
+      arg:
+        api: ['*MpPreference*', '*MpScan*']
+evidence: events

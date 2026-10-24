@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '隐藏窗口执行'
+    namespace: 'defense-evasion/hidden-exec'
+    scope: 'process'
+    authors: [tianti]
+    description: '以隐藏窗口方式运行命令避免用户察觉'
+    att&ck:
+      - 'Defense Evasion::Hide Artifacts Hidden Window [T1564.003]'
+  features:
+    - or:
+      - string: '/-windowstyle\s+hidden/i'
+      - string: '/-w\s+hidden/i'

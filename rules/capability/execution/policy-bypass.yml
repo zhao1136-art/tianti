@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '绕过 PowerShell 执行策略'
+    namespace: 'execution/script/policy-bypass'
+    scope: 'process'
+    authors: [tianti]
+    description: '以 -ExecutionPolicy Bypass 绕过脚本执行限制'
+    att&ck:
+      - 'Execution::Command and Scripting Interpreter PowerShell [T1059.001]'
+  features:
+    - string: '/(-executionpolicy\s+bypass|-ep\s+bypass)/i'

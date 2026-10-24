@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: 'ATT&CK T1562.001 关闭或绕过安全工具'
+    namespace: 'attack/defense-evasion/impair-defenses'
+    scope: 'process'
+    authors: [tianti]
+    description: 'ATT&CK 视角的 AMSI/ETW 打补丁行为'
+    att&ck:
+      - 'Defense Evasion::Impair Defenses Disable or Modify Tools [T1562.001]'
+  features:
+    - or:
+      - amsi
+      - etw

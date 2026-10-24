@@ -1,0 +1,19 @@
+# 持久化：安装/修改服务
+detector: service_persistence
+name: 安装或修改服务
+tactic: TA0003
+technique: T1543.003
+severity: high
+score: 18
+match:
+  any:
+    - category: service
+      action: [create, config]
+    - category: process
+      action: create
+      arg:
+        command_line: ['*sc create*', '*sc.exe create*', '*New-Service*', '*sc config*']
+suppress:
+  - image_glob: ['*\program files\*', '*\program files (x86)\*']
+    reason: 安装程序创建服务（签名占位），降权
+evidence: events

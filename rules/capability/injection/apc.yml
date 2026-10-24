@@ -1,0 +1,15 @@
+rule:
+  meta:
+    name: 'APC 注入'
+    namespace: 'injection/apc'
+    scope: 'process'
+    authors: [tianti]
+    description: '分配内存并通过 QueueUserAPC 排队执行代码'
+    att&ck:
+      - 'Defense Evasion::Process Injection Asynchronous Procedure Call [T1055.004]'
+  features:
+    - and:
+      - allocate memory
+      - or:
+        - api: QueueUserAPC
+        - api: NtQueueApcThread

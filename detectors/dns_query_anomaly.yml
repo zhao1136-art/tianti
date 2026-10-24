@@ -1,0 +1,15 @@
+# C2：DNS 异常查询（长标签/高熵）
+detector: dns_query_anomaly
+name: DNS 异常查询（长标签/高熵域名）
+tactic: TA0011
+technique: T1071.004
+severity: medium
+score: 7
+match:
+  all:
+    - category: network
+      action: dns
+    - any:
+        - target_max_label_len_gte: 20
+        - target_entropy_gt: 3.8
+evidence: events

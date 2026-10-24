@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '创建计划任务'
+    namespace: 'persistence/scheduled-task'
+    scope: 'process'
+    authors: [tianti]
+    description: '创建计划任务实现定时执行或持久化'
+    att&ck:
+      - 'Persistence::Scheduled Task/Job Scheduled Task [T1053.005]'
+  features:
+    - create scheduled task

@@ -1,0 +1,15 @@
+rule:
+  meta:
+    name: '删除卷影副本或禁用恢复'
+    namespace: 'impact/ransomware/shadow-copy-deletion'
+    scope: 'process'
+    authors: [tianti]
+    description: '使用 vssadmin/wbadmin/bcdedit 删除卷影或禁用系统恢复'
+    att&ck:
+      - 'Impact::Inhibit System Recovery [T1490]'
+  features:
+    - or:
+      - process create: '*\vssadmin.exe'
+      - string: '/vssadmin(\.exe)?\s+delete\s+shadows/i'
+      - string: '/wbadmin\s+delete\s+catalog/i'
+      - string: '/bcdedit.*recoveryenabled\s+no/i'

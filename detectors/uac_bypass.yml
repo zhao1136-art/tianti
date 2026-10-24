@@ -1,0 +1,13 @@
+# 提权：UAC 绕过链
+detector: uac_bypass
+name: UAC 绕过（fodhelper/eventvwr/computerdefaults 等）
+tactic: TA0004
+technique: T1548.002
+severity: high
+score: 16
+match:
+  category: process
+  action: create
+  arg:
+    command_line: ['*fodhelper*', '*eventvwr*msc*', '*computerdefaults*', '*sdclt*/kickoffelev*', '*cmstp*/ni:*', '*wsreset*/uac*']
+evidence: events

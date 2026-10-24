@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '查询当前用户身份'
+    namespace: 'discovery/host/whoami'
+    scope: 'process'
+    authors: [tianti]
+    description: '执行 whoami 等命令发现当前账户与权限'
+    att&ck:
+      - 'Discovery::System Owner/User Discovery [T1033]'
+  features:
+    - or:
+      - process create: '*\whoami.exe'
+      - string: '/\bwhoami\b/i'

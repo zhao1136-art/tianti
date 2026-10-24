@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '外联非标准端口'
+    namespace: 'command-and-control/network/non-standard-port'
+    scope: 'process'
+    authors: [tianti]
+    description: '连接 80/443/53 之外的端口，疑似 C2 回连'
+    att&ck:
+      - 'Command and Control::Application Layer Protocol [T1071]'
+  features:
+    - and:
+      - network connect
+      - not:
+        - port: [80, 443, 53]

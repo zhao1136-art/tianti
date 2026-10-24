@@ -1,7 +1,8 @@
-"""天体引擎 CLI 入口。
+"""天体引擎 CLI 入口（L5）。
 
-M0 只实现 version / --help；其余命令返回 EXIT_NOT_IMPLEMENTED 并提示对应里程碑，
-由 delivery 在 M6 接管实现。
+命令：version / trace / replay / rules / detectors / report / scan / serve。
+编排统一走 tianti.api.pipeline（L5 适配层）；分析模块缺失时输出友好错误（退出码 1）
+而不是 traceback。argparse 负责 --help（退出码 0）与未知参数（退出码 2）。
 """
 
 from __future__ import annotations
@@ -16,13 +17,14 @@ from typing import Any
 
 from . import __version__
 from .core.config import Config
-from .core.errors import TiantiError
+from .core.errors import SampleError, TiantiError
 from .trace.normalize import EventBuilder, build_trace
 from .trace.schema import SCHEMA_ID, SandboxInfo, Trace
 
 EXIT_OK = 0
 EXIT_ERROR = 1
-EXIT_NOT_IMPLEMENTED = 3
+EXIT_USAGE = 2
+EXIT_NOT_IMPLEMENTED = 3  # 保留常量兼容旧导入；M6 起不再有 stub 命令
 
 BACKEND_MODULES = {
     "replay": "tianti.sandbox.replay",
@@ -30,6 +32,16 @@ BACKEND_MODULES = {
     "emulation": "tianti.sandbox.emulation",
     "vm": "tianti.sandbox.vm",
 }
+
+MAX_DIR_FILES = 200
+
+
+# --------------------------------------------------------------------- 基础工具
+def _fail(message: str, *, hint: str = "", code: int = EXIT_ERROR) -> int:
+    sys.stderr.write(f"错误: {message}\n")
+    if hint:
+        sys.stderr.write(f"提示: {hint}\n")
+    return code
 
 
 def _backend_status() -> dict[str, dict[str, Any]]:
@@ -69,7 +81,7 @@ def _self_test() -> dict[str, Any]:
     builder = EventBuilder(max_events=8, source="selftest")
     builder.start()
     builder.emit("process", "create", pid=1, image="selftest.exe", target="selftest.exe", source="selftest", confidence="high")
-    builder.emit("file", "write", pid=1, target="C:\\tianti\\selftest.tmp", source="selftest", confidence="medium")
+    builder.emit("file", "write", pid=1, target="C:/tianti/selftest.tmp", source="selftest", confidence="medium")
     sample = Sample.from_bytes(b"tianti-selftest", "selftest.bin")
     trace = build_trace(
         sample=sample,
@@ -88,6 +100,62 @@ def _self_test() -> dict[str, Any]:
     }
 
 
+def _resolve_out_path(value: str | None, *, default_dir: Path, filename: str) -> Path:
+    """--out 可给文件路径或目录；无后缀/已存在目录视为目录。"""
+    if not value:
+        return default_dir / filename
+    candidate = Path(value)
+    if candidate.is_dir() or not candidate.suffix:
+        return candidate / filename
+    return candidate
+
+
+def _result_common_name(default_json_name: str) -> str:
+    """demo_ransom.ps1.result.json -> demo_ransom.ps1。"""
+    suffix = ".result.json"
+    if default_json_name.endswith(suffix):
+        return default_json_name[: -len(suffix)]
+    return Path(default_json_name).stem
+
+
+def _result_summary_lines(result: Any) -> list[str]:
+    verdict = result.verdict
+    lines = [
+        f"样本:     {result.sample_name}",
+        f"trace_id: {result.trace_id or '—'}",
+        f"结论:     {verdict.verdict}（score={verdict.score}，confidence={verdict.confidence}）",
+        f"能力命中: {len(result.matches)}  危险行为: {len(result.hits)}",
+    ]
+    if result.hits:
+        lines.append("主要命中:")
+        ordered = sorted(
+            result.hits,
+            key=lambda hit: (0 if hit.suppressed else 1, float(hit.score or 0)),
+            reverse=True,
+        )
+        for hit in ordered[:5]:
+            flag = "（已抑制）" if hit.suppressed else ""
+            lines.append(f"  - [{hit.severity}] {hit.detector_id} {hit.name} score={hit.score}{flag}")
+    for note in result.notes:
+        lines.append(f"备注: {note}")
+    return lines
+
+
+def _iter_dir_files(directory: Path) -> list[Path]:
+    """递归列出目录下所有文件（排序稳定）；数量上限由 cmd_scan 截断并提示。"""
+    return [path for path in sorted(directory.rglob("*")) if path.is_file()]
+
+
+def _dir_output_stem(relative: Path, index: int) -> str:
+    """目录模式的结果文件名主干：序号 + 相对路径，保证不冲突（同名不同目录也唯一）。"""
+    from .report import jsonr
+
+    parts = [part for part in relative.parts if part not in ("", ".")]
+    joined = "__".join(parts) if parts else "sample"
+    return f"{index:04d}__{jsonr.safe_stem(joined)}"
+
+
+# --------------------------------------------------------------------- version
 def cmd_version(args: argparse.Namespace) -> int:
     cfg = Config.default()
     payload: dict[str, Any] = {
@@ -132,26 +200,244 @@ def cmd_version(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-_STUB_HINTS = {
-    "scan": "M6（delivery）",
-    "trace": "M3（sandbox）",
-    "replay": "M2/M4/M5（sandbox/rules/detect）",
-    "rules": "M4（rules）",
-    "detectors": "M5（detect）",
-    "report": "M6（delivery）",
-    "serve": "M6（delivery）",
-}
+# --------------------------------------------------------------------- trace
+def cmd_trace(args: argparse.Namespace) -> int:
+    from .api import pipeline
+
+    cfg = Config.load()
+    trace, info = pipeline.run_backend(args.path, policy_name=args.policy, config=cfg)
+    out = _resolve_out_path(args.out, default_dir=cfg.paths.out, filename=f"{trace.trace_id}.trace.json")
+    from .trace import schema
+
+    path = schema.save(trace, out)
+    print(f"已产出 trace: {path}")
+    print(f"后端: {info.get('backend')}  事件: {len(trace.events)}  trace_id: {trace.trace_id}")
+    return EXIT_OK
 
 
-def cmd_stub(args: argparse.Namespace) -> int:
-    hint = _STUB_HINTS.get(args.command, "后续里程碑")
-    sys.stderr.write(
-        f"命令 '{args.command}' 尚未实现（计划 {hint}）。\n"
-        f"当前可用：python -m tianti version [--json] [--check]\n"
-    )
-    return EXIT_NOT_IMPLEMENTED
+# --------------------------------------------------------------------- replay
+def cmd_replay(args: argparse.Namespace) -> int:
+    from .api import pipeline
+    from .report import jsonr
+    from .trace import schema
+
+    cfg = Config.load()
+    trace = schema.load(args.trace)
+    result = pipeline.analyze_trace(trace, config=cfg)
+    if args.format == "json":
+        text = jsonr.dumps(result)
+        if args.out:
+            path = _resolve_out_path(args.out, default_dir=cfg.paths.out, filename=jsonr.result_filename(result.sample_name))
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text + "\n", encoding="utf-8")
+            print(str(path))
+        else:
+            print(text)
+        return EXIT_OK
+    summary = "\n".join(_result_summary_lines(result))
+    if args.out:
+        path = _resolve_out_path(args.out, default_dir=cfg.paths.out, filename=f"{jsonr.result_filename(result.sample_name)}.txt")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(summary + "\n", encoding="utf-8")
+        print(str(path))
+    else:
+        print(summary)
+    return EXIT_OK
 
 
+# --------------------------------------------------------------------- report
+def cmd_report(args: argparse.Namespace) -> int:
+    from .report import html, jsonr
+
+    cfg = Config.load()
+    result = jsonr.load_result(args.result)
+    common = _result_common_name(jsonr.result_filename(result.sample_name))
+    out = _resolve_out_path(args.out, default_dir=cfg.paths.out, filename=f"{common}.report.html")
+    path = html.save_html(result, out, title=f"天体引擎报告 - {result.sample_name}")
+    print(f"已生成 HTML 报告: {path}")
+    print(f"结论: {result.verdict.verdict}  score={result.verdict.score}  confidence={result.verdict.confidence}")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------- scan
+def _scan_one(
+    path: Path,
+    *,
+    policy: str | None,
+    out_dir: Path,
+    fmt: str,
+    cfg: Config,
+    stem_override: str | None = None,
+) -> list[Path]:
+    from .api import pipeline
+    from .report import html, jsonr
+
+    result = pipeline.scan_path(path, policy=policy, config=cfg)
+    common = stem_override or _result_common_name(jsonr.result_filename(result.sample_name))
+    written: list[Path] = []
+    if fmt in ("json", "both"):
+        written.append(jsonr.save_result(result, out_dir / f"{common}.result.json"))
+    if fmt in ("html", "both"):
+        written.append(html.save_html(result, out_dir / f"{common}.report.html"))
+    print(f"[{result.verdict.verdict}] {result.sample_name} score={result.verdict.score} "
+          f"matches={len(result.matches)} hits={len(result.hits)}")
+    for item in written:
+        print(f"  -> {item}")
+    return written
+
+
+def cmd_scan(args: argparse.Namespace) -> int:
+    cfg = Config.load()
+    target = Path(args.path)
+    if not target.exists():
+        raise SampleError(f"路径不存在: {target}", path=str(target))
+    out_dir = Path(args.out) if args.out else cfg.paths.out
+    if target.is_dir():
+        all_files = _iter_dir_files(target)
+        if not all_files:
+            raise SampleError(f"目录下没有可扫描文件: {target}", path=str(target))
+        files = all_files[:MAX_DIR_FILES]
+        if len(all_files) > MAX_DIR_FILES:
+            sys.stderr.write(
+                f"警告: 目录下共 {len(all_files)} 个文件，单次最多扫描 {MAX_DIR_FILES} 个；"
+                f"其余 {len(all_files) - MAX_DIR_FILES} 个未处理（请缩小目录或分批扫描）\n"
+            )
+        out_dir.mkdir(parents=True, exist_ok=True)
+        failed = 0
+        for index, file_path in enumerate(files, start=1):
+            relative = file_path.relative_to(target)
+            stem_override = _dir_output_stem(relative, index)
+            try:
+                print(f"[{index}/{len(files)}] 扫描 {file_path}")
+                _scan_one(
+                    file_path,
+                    policy=args.policy,
+                    out_dir=out_dir,
+                    fmt=args.format,
+                    cfg=cfg,
+                    stem_override=stem_override,
+                )
+            except TiantiError as exc:
+                failed += 1
+                sys.stderr.write(json.dumps(exc.to_dict(), ensure_ascii=False) + "\n")
+            except Exception as exc:  # 单文件失败不影响整目录
+                failed += 1
+                sys.stderr.write(f"错误: 扫描 {file_path} 失败: {exc}\n")
+        if failed:
+            _fail(f"目录扫描完成，{failed}/{len(files)} 个文件失败", code=EXIT_ERROR)
+            return EXIT_ERROR
+        return EXIT_OK
+    out_dir.mkdir(parents=True, exist_ok=True)
+    _scan_one(target, policy=args.policy, out_dir=out_dir, fmt=args.format, cfg=cfg)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------- rules
+def _print_pack_info(info: dict[str, Any], label: str) -> None:
+    if info.get("available"):
+        print(f"{label}引擎: {info.get('engine') or '已接通'}")
+        print(f"数量: {info.get('count', 0)}")
+        for name in info.get("rules") or info.get("detectors") or []:
+            if name:
+                print(f"  - {name}")
+        errors = info.get("errors") or []
+        unsupported = info.get("unsupported") or []
+        if errors:
+            print(f"加载错误: {len(errors)} 条")
+            for error in errors[:10]:
+                print(f"  ! {error}")
+        if unsupported:
+            print(f"不支持语法: {len(unsupported)} 条")
+    else:
+        reason = str(info.get("reason", "未知原因"))
+        if not reason.startswith(f"{label}引擎"):
+            reason = f"{label}引擎尚未接通: {reason}"
+        print(reason)
+        files = info.get("files") or []
+        print(f"已发现 {info.get('count', len(files))} 个{label}文件（未解析）")
+        for name in files[:20]:
+            print(f"  - {name}")
+
+
+def cmd_rules(args: argparse.Namespace) -> int:
+    from .api import pipeline
+    from .trace import schema
+
+    cfg = Config.load()
+    if args.action == "list":
+        info = pipeline.describe_rules(cfg)
+        if args.json:
+            print(json.dumps(info, ensure_ascii=False, indent=2))
+        else:
+            _print_pack_info(info, "规则")
+        return EXIT_OK
+    if args.action == "validate":
+        ok, info = pipeline.validate_rules(cfg)
+        if args.json:
+            print(json.dumps(info, ensure_ascii=False, indent=2))
+        else:
+            _print_pack_info(info, "规则")
+        if not info.get("available"):
+            _fail(str(info.get("reason") or "规则引擎不可用"), hint="规则引擎由 M4（rules）交付；当前只能浏览规则文件")
+            return EXIT_ERROR
+        if not ok:
+            _fail("规则校验失败，详见上方错误")
+            return EXIT_ERROR
+        print("规则校验通过")
+        return EXIT_OK
+    if not args.target:
+        _fail("rules match 需要 trace 路径", hint="python -m tianti rules match <trace.json>", code=EXIT_USAGE)
+        return EXIT_USAGE
+    trace = schema.load(args.target)
+    matches, note = pipeline.run_rules(trace, config=cfg)
+    if note:
+        _fail(note, hint="规则引擎由 M4（rules）交付；可先用 replay 查看检测器结果")
+        return EXIT_ERROR
+    payload = {"count": len(matches), "matches": [match.to_dict() for match in matches]}
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------- detectors
+def cmd_detectors(args: argparse.Namespace) -> int:
+    from .api import pipeline
+    from .trace import schema
+
+    cfg = Config.load()
+    if args.action == "list":
+        info = pipeline.describe_detectors(cfg)
+        if args.json:
+            print(json.dumps(info, ensure_ascii=False, indent=2))
+        else:
+            _print_pack_info(info, "检测器")
+        return EXIT_OK
+    if not args.target:
+        _fail("detectors run 需要 trace 路径", hint="python -m tianti detectors run <trace.json>", code=EXIT_USAGE)
+        return EXIT_USAGE
+    trace = schema.load(args.target)
+    hits, note = pipeline.run_detectors(trace, config=cfg)
+    if note and not hits:
+        _fail(note, hint="检测器由 M5（detect）交付")
+        return EXIT_ERROR
+    payload = {"count": len(hits), "hits": [hit.to_dict() for hit in hits]}
+    if note:
+        payload["warning"] = note
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------- serve
+def cmd_serve(args: argparse.Namespace) -> int:
+    if args.host not in ("127.0.0.1", "localhost", "::1"):
+        _fail(f"仅允许监听回环地址，拒绝: {args.host}", hint="使用 --host 127.0.0.1")
+        return EXIT_ERROR
+    from .api import httpd
+
+    httpd.serve(args.host, args.port)
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------- parser
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="tianti",
@@ -165,44 +451,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_version.add_argument("--check", action="store_true", help="运行契约自检")
     p_version.set_defaults(func=cmd_version)
 
-    p_scan = sub.add_parser("scan", help="[M6] 全流程扫描（文件或目录）")
-    p_scan.add_argument("path")
+    p_trace = sub.add_parser("trace", help="只跑沙箱并输出 trace")
+    p_trace.add_argument("path", help="样本文件路径")
+    p_trace.add_argument("--policy", default=None, help="fast / deep / paranoid")
+    p_trace.add_argument("--out", default=None, help="输出文件或目录")
+    p_trace.set_defaults(func=cmd_trace)
+
+    p_replay = sub.add_parser("replay", help="回放 trace（规则 / 检测器 / 判定）")
+    p_replay.add_argument("trace", help="trace JSON 路径")
+    p_replay.add_argument("--policy", default=None, help="覆盖策略档位（仅记录）")
+    p_replay.add_argument("--format", default="json", choices=["json", "summary"], help="输出格式")
+    p_replay.add_argument("--out", default=None, help="结果输出文件或目录")
+    p_replay.set_defaults(func=cmd_replay)
+
+    p_rules = sub.add_parser("rules", help="规则包管理")
+    p_rules.add_argument("action", choices=["list", "validate", "match"], help="list / validate / match")
+    p_rules.add_argument("target", nargs="?", help="match 时的 trace 路径")
+    p_rules.add_argument("--json", action="store_true", help="以 JSON 输出")
+    p_rules.set_defaults(func=cmd_rules)
+
+    p_detectors = sub.add_parser("detectors", help="检测器管理")
+    p_detectors.add_argument("action", choices=["list", "run"], help="list / run")
+    p_detectors.add_argument("target", nargs="?", help="run 时的 trace 路径")
+    p_detectors.add_argument("--json", action="store_true", help="以 JSON 输出")
+    p_detectors.set_defaults(func=cmd_detectors)
+
+    p_report = sub.add_parser("report", help="由结果 JSON 生成单文件 HTML 报告")
+    p_report.add_argument("result", help="result JSON 路径")
+    p_report.add_argument("--out", default=None, help="HTML 输出文件或目录")
+    p_report.add_argument("--html", action="store_true", help="兼容写法：始终生成 HTML")
+    p_report.set_defaults(func=cmd_report)
+
+    p_scan = sub.add_parser("scan", help="全流程扫描（文件或目录）")
+    p_scan.add_argument("path", help="样本文件或目录")
     p_scan.add_argument("--policy", default=None, help="fast / deep / paranoid")
     p_scan.add_argument("--out", default=None, help="输出目录")
-    p_scan.add_argument("--format", default="both", choices=["json", "html", "both"])
-    p_scan.set_defaults(func=cmd_stub)
+    p_scan.add_argument("--format", default="both", choices=["json", "html", "both"], help="输出格式")
+    p_scan.set_defaults(func=cmd_scan)
 
-    p_trace = sub.add_parser("trace", help="[M3] 只跑沙箱并输出 trace")
-    p_trace.add_argument("path")
-    p_trace.add_argument("--policy", default=None)
-    p_trace.add_argument("--out", default=None)
-    p_trace.set_defaults(func=cmd_stub)
-
-    p_replay = sub.add_parser("replay", help="[M2] 回放 trace（规则/检测器/判定）")
-    p_replay.add_argument("trace")
-    p_replay.add_argument("--policy", default=None)
-    p_replay.add_argument("--format", default="json", choices=["json", "summary"])
-    p_replay.set_defaults(func=cmd_stub)
-
-    p_rules = sub.add_parser("rules", help="[M4] 规则包管理")
-    p_rules.add_argument("action", choices=["list", "validate", "match"])
-    p_rules.add_argument("target", nargs="?")
-    p_rules.set_defaults(func=cmd_stub)
-
-    p_detectors = sub.add_parser("detectors", help="[M5] 检测器管理")
-    p_detectors.add_argument("action", choices=["list", "run"])
-    p_detectors.add_argument("target", nargs="?")
-    p_detectors.set_defaults(func=cmd_stub)
-
-    p_report = sub.add_parser("report", help="[M6] 生成 HTML 报告")
-    p_report.add_argument("result")
-    p_report.add_argument("--out", default=None)
-    p_report.set_defaults(func=cmd_stub)
-
-    p_serve = sub.add_parser("serve", help="[M6] 启动本地 API")
-    p_serve.add_argument("--host", default="127.0.0.1")
-    p_serve.add_argument("--port", type=int, default=8765)
-    p_serve.set_defaults(func=cmd_stub)
+    p_serve = sub.add_parser("serve", help="启动本地 HTTP API（127.0.0.1）")
+    p_serve.add_argument("--host", default="127.0.0.1", help="仅允许回环地址")
+    p_serve.add_argument("--port", type=int, default=8765, help="端口（0 表示随机）")
+    p_serve.set_defaults(func=cmd_serve)
 
     return parser
 
@@ -222,6 +512,9 @@ def main(argv: list[str] | None = None) -> int:
         return int(func(args))
     except TiantiError as exc:
         sys.stderr.write(json.dumps(exc.to_dict(), ensure_ascii=False) + "\n")
+        return EXIT_ERROR
+    except ModuleNotFoundError as exc:
+        _fail(f"依赖模块缺失: {exc.name or exc}")
         return EXIT_ERROR
     except KeyboardInterrupt:
         sys.stderr.write("已中断\n")

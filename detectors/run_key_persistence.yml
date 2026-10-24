@@ -1,0 +1,16 @@
+# 持久化：Run/RunOnce 自启动
+detector: run_key_persistence
+name: Run/RunOnce 自启动
+tactic: TA0003
+technique: T1547.001
+severity: high
+score: 18
+match:
+  all:
+    - category: registry
+      action: [set, create]
+      target: ['*CurrentVersion\Run\*', '*CurrentVersion\RunOnce\*']
+suppress:
+  - image_glob: ['*\program files\*', '*\program files (x86)\*']
+    reason: 已安装程序（签名占位）写入自启动键，降权
+evidence: events

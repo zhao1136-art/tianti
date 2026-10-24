@@ -1,0 +1,28 @@
+# 影响：勒索批量加密/删除（sequence 语义用 window + aggregate 实现）
+# 语义：10 秒窗口内 >=20 个不同文件被写/改名，且出现勒索扩展名或高熵内容。
+detector: ransomware_mass_ops
+name: 短时间批量高熵文件改写（勒索行为）
+tactic: TA0040
+technique: T1486
+severity: critical
+score: 40
+window_s: 10
+match:
+  all:
+    - any:
+        - category: file
+          action: write
+        - category: file
+          action: rename
+    - aggregate:
+        distinct: [target]
+        count: '>= 20'
+        of:
+          category: file
+          action: [write, rename, delete]
+    - any:
+        - file_ext_in: ['.locked', '.enc', '.crypt', '.encrypted', '.wncry', '.ryk', '.crypted']
+        - entropy_gt: 7.2
+        - category: file
+          action: rename
+evidence: events

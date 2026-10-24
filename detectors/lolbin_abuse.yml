@@ -1,0 +1,17 @@
+# 防御规避：系统工具滥用（LOLBin）
+detector: lolbin_abuse
+name: 系统工具滥用（LOLBin）
+tactic: TA0005
+technique: T1218
+severity: medium
+score: 8
+match:
+  any:
+    - category: process
+      action: create
+      target: ['*\rundll32.exe', '*\regsvr32.exe', '*\mshta.exe', '*\certutil.exe', '*\installutil.exe', '*\msbuild.exe', '*\regasm.exe']
+    - category: process
+      action: create
+      arg:
+        command_line: ['*certutil*urlcache*', '*regsvr32*/s*/i:*', '*rundll32*javascript:*', '*mshta*http*']
+evidence: events

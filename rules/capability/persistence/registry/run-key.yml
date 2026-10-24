@@ -1,0 +1,15 @@
+rule:
+  meta:
+    name: '写入 Run 键实现自启动'
+    namespace: 'persistence/registry/run-key'
+    scope: 'process'
+    authors: [tianti]
+    description: '通过 HKCU/HKLM CurrentVersion Run 键实现开机自启'
+    att&ck:
+      - 'Persistence::Registry Run Keys / Startup Folder [T1547.001]'
+  features:
+    - and:
+      - registry set: '*\currentversion\run*'
+      - optional:
+        - process create: '*\cmd.exe'
+        - process create: '*\powershell.exe'

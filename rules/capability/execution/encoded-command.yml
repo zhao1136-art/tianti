@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '使用编码命令行执行脚本'
+    namespace: 'execution/script/encoded'
+    scope: 'process'
+    authors: [tianti]
+    description: '通过 -EncodedCommand 或 FromBase64String 隐藏脚本内容'
+    att&ck:
+      - 'Execution::Command and Scripting Interpreter PowerShell [T1059.001]'
+  features:
+    - string: '/(-enc\b|encodedcommand|frombase64string)/i'

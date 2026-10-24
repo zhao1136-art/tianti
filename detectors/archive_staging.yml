@@ -1,0 +1,22 @@
+# 收集：打包暂存
+detector: archive_staging
+name: 打包暂存（压缩/归档）
+tactic: TA0009
+technique: T1560
+severity: high
+score: 15
+match:
+  any:
+    - category: process
+      action: create
+      arg:
+        command_line: ['*rar.exe a *', '*rar a *', '*7z.exe a *', '*7z a *', '*Compress-Archive*', '*makecab*', '*tar -c*']
+    - category: file
+      action: [create, write]
+      target: ['*.zip', '*.rar', '*.7z', '*.tar', '*.cab']
+      arg:
+        size_gte: 4096
+suppress:
+  - image_glob: ['*\program files\*', '*\program files (x86)\*']
+    reason: 已安装备份程序打包（签名占位），降权
+evidence: events

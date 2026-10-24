@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '滥用 regsvr32 执行载荷'
+    namespace: 'defense-evasion/lolbin/regsvr32'
+    scope: 'process'
+    authors: [tianti]
+    description: '使用 regsvr32.exe 加载远程或本地脚本组件'
+    att&ck:
+      - 'Defense Evasion::System Binary Proxy Execution Regsvr32 [T1218.010]'
+  features:
+    - process create: '*\regsvr32.exe'

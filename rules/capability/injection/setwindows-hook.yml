@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '安装全局 Windows 钩子'
+    namespace: 'injection/setwindows-hook'
+    scope: 'process'
+    authors: [tianti]
+    description: '通过 SetWindowsHookEx 注入消息钩子'
+    att&ck:
+      - 'Defense Evasion::Process Injection [T1055]'
+  features:
+    - api: SetWindowsHookEx

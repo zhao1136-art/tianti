@@ -1,0 +1,13 @@
+# 执行：脚本执行策略绕过
+detector: script_exec_bypass
+name: PowerShell 执行策略绕过
+tactic: TA0002
+technique: T1059.001
+severity: medium
+score: 8
+match:
+  category: process
+  action: create
+  arg:
+    command_line: ['*-executionpolicy bypass*', '*-ep bypass*', '*-exec bypass*', '*set-executionpolicy*bypass*', '*executionpolicy*unrestricted*']
+evidence: events

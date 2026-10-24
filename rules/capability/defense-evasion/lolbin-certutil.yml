@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '滥用 certutil 下载或解码'
+    namespace: 'defense-evasion/lolbin/certutil'
+    scope: 'process'
+    authors: [tianti]
+    description: '使用 certutil.exe 下载或 base64 解码载荷'
+    att&ck:
+      - 'Defense Evasion::System Binary Proxy Execution [T1218]'
+  features:
+    - or:
+      - process create: '*\certutil.exe'
+      - string: '/certutil(\.exe)?\s+-(urlcache|decode)/i'

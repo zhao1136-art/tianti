@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '绕过或打补丁 AMSI'
+    namespace: 'defense-evasion/amsi-patch'
+    scope: 'process'
+    authors: [tianti]
+    description: '修改 AMSI 相关内存或调用 AmsiScanBuffer 规避脚本扫描'
+    att&ck:
+      - 'Defense Evasion::Impair Defenses Disable or Modify Tools [T1562.001]'
+  features:
+    - or:
+      - amsi
+      - api: AmsiScanBuffer
+      - string: '/amsi\.dll/i'

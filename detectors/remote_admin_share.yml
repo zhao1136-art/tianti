@@ -1,0 +1,21 @@
+# 横向：远程管理共享拷贝 + 服务创建（critical）
+detector: remote_admin_share
+name: 横向移动（ADMIN$/C$ 共享或 UNC 服务）
+tactic: TA0008
+technique: T1021.002
+severity: critical
+score: 26
+match:
+  any:
+    - category: file
+      action: [create, write]
+      target: ['*\ADMIN$\*', '*\C$\*', '*\IPC$\*']
+    - category: service
+      action: create
+      arg:
+        command_line: '*\*$\*'
+    - category: process
+      action: create
+      arg:
+        command_line: ['*net use \\*', '*copy *.exe \\*']
+evidence: events

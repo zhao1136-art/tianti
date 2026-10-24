@@ -1,0 +1,21 @@
+# 防御规避：AMSI/ETW 打补丁（critical）
+detector: amsi_etw_patch
+name: AMSI/ETW 绕过或打补丁
+tactic: TA0005
+technique: T1562.001
+severity: critical
+score: 25
+match:
+  any:
+    - category: security
+      action: [amsi, etw]
+    - category: api
+      action: call
+      arg:
+        api: ['AmsiScanBuffer', 'AmsiOpenSession', 'EtwEventWrite', 'NtTraceEvent', 'EtwEventWriteFull']
+    - category: memory
+      action: protect
+      target: ['*amsi*', '*ntdll*']
+      arg:
+        protect: '*EXECUTE_READWRITE*'
+evidence: events

@@ -1,0 +1,13 @@
+# 防御规避：隐藏执行
+detector: hidden_execution
+name: 隐藏窗口或无文件/编码执行
+tactic: TA0005
+technique: T1564.003
+severity: medium
+score: 8
+match:
+  category: process
+  action: create
+  arg:
+    command_line: ['*-w hidden*', '*-windowstyle hidden*', '*-enc *', '*-encodedcommand*', '*-nop -w*', '*-noni -w*']
+evidence: events

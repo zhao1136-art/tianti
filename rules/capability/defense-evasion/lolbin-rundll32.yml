@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '滥用 rundll32 执行载荷'
+    namespace: 'defense-evasion/lolbin/rundll32'
+    scope: 'process'
+    authors: [tianti]
+    description: '使用系统自带 rundll32.exe 代理执行恶意 DLL/导出函数'
+    att&ck:
+      - 'Defense Evasion::System Binary Proxy Execution Rundll32 [T1218.011]'
+  features:
+    - process create: '*\rundll32.exe'

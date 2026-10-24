@@ -199,7 +199,7 @@ class SandboxBackend(Protocol):
 | 任务对象 | Job Object：内存/CPU 上限、`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`、进程数上限 | 防炸弹，杀树可靠 |
 | 网络阻断 | 优先 AppContainer 无网络能力；降级 `netsh advfirewall` 按程序路径 block in/out，finally 清理 | 默认无外联，避免真实 C2 |
 | UI/交互 | 隐藏窗口、`STARTF_USESHOWWINDOW`、禁止剪贴板/桌面交互 | 静默执行 |
-| 完整性 | 中完整性令牌；驱动/服务修改记录而非拦截（标注 confidence） | 能力边界明确 |
+| 完整性 | **低完整性**（TokenIntegrityLevel=S-1-16-4096）+ 工作目录 icacls L；写系统目录被拒，读/执行不受限 | 已实测生效（红线 R4） |
 | 超时 | watchdog + 子进程树枚举（`CreateToolhelp32Snapshot`）强杀 | 默认 20s，deep 60s |
 
 > 方案 A（AppContainer）与方案 B（受限令牌 + 防火墙）在 M3 第 1 天做可行性验证，选通一个并写入 `docs/THREAT_MODEL.md`。**安全红线见 §4.6。**
@@ -537,3 +537,21 @@ DSL 支持：`all/any/not`、`aggregate(distinct,count)`、`window_s`、`sequenc
 3. M0 完成后进入并行开发，每个里程碑交付后我做全量测试 + 红线检查再放行。
 
 > 免责声明：本引擎为行为分析原型，结论不构成安全保证；沙箱隔离能力受本机条件限制，禁止在本机执行不受信任的真实恶意样本。
+
+
+---
+
+## 15. 实施结果（2026-10-24，M0-M7 完成）
+
+| 里程碑 | 结果 |
+|--------|------|
+| M0 地基与契约 | Trace / SandboxBackend / RuleMatch / DetectorHit / Verdict 冻结；3 份 golden trace；290 tests 基线 |
+| M1 静态预筛 | PE32/PE64 解析、脚本/归档特征、EICAR；10 fixture 合计 42.8ms |
+| M2 归一化 + 回放 | ReplayBackend、JSONL、metrics；golden 事件序列逐字段一致 |
+| M3 containment 沙箱 | 受限令牌 + 低完整性（S-1-16-4096）+ Job Object + 按程序防火墙 + 硬杀线程；红线 5/5 通过 |
+| M4 规则引擎 | 零依赖 YAML、and/or/not/optional/count/match(DAG)、5 scope；54 条规则；1k=55ms / 10k=591ms |
+| M5 检测 + 判定 | 26 检测器（10 战术）、确定性评分、抑制语义、签名占位披露；golden 182.35/107.6/15.0 |
+| M6 交付 | CLI 全命令、单文件 HTML、本地 API（127.0.0.1）；目录 scan 串行 200 文件 |
+| M7 评测加固 | 290 tests OK；redline 全过；残留审计通过；360 HIPS 风险记录 |
+
+已知差距：rules 10k 591ms（目标 300ms，约 2x）；ETW 默认关闭；真恶意样本评测需 VM（本机不可行）。

@@ -1,0 +1,19 @@
+# 持久化：计划任务
+detector: scheduled_task_persistence
+name: 创建计划任务
+tactic: TA0003
+technique: T1053.005
+severity: high
+score: 18
+match:
+  any:
+    - category: scheduled_task
+      action: [create, run]
+    - category: process
+      action: create
+      arg:
+        command_line: ['*schtasks*create*', '*Register-ScheduledTask*', '*schtasks*/change*']
+suppress:
+  - image_glob: ['*\program files\*', '*\program files (x86)\*']
+    reason: 安装程序注册计划任务（签名占位），降权
+evidence: events

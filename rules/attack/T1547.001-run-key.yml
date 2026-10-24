@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: 'ATT&CK T1547.001 Run 键持久化'
+    namespace: 'attack/persistence/run-key'
+    scope: 'process'
+    authors: [tianti]
+    description: 'ATT&CK 视角的 Run 键持久化行为'
+    att&ck:
+      - 'Persistence::Registry Run Keys / Startup Folder [T1547.001]'
+  features:
+    - registry set: '*\currentversion\run*'

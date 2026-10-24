@@ -1,0 +1,13 @@
+# 执行：Office -> Shell 子进程
+detector: office_spawn_shell
+name: Office 应用启动 Shell 子进程
+tactic: TA0002
+technique: T1059
+severity: high
+score: 18
+match:
+  category: process
+  action: create
+  image: ['*\WINWORD.EXE', '*\EXCEL.EXE', '*\POWERPNT.EXE', '*\OUTLOOK.EXE', '*\wps.exe', '*\et.exe']
+  target: ['*\cmd.exe', '*\powershell.exe', '*\wscript.exe', '*\cscript.exe', '*\mshta.exe', '*\rundll32.exe']
+evidence: events

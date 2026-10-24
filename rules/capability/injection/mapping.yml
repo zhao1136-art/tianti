@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: '内存映射注入'
+    namespace: 'injection/mapping'
+    scope: 'process'
+    authors: [tianti]
+    description: '通过内存映射段共享代码并创建远程线程执行'
+    att&ck:
+      - 'Defense Evasion::Process Injection Process Doppelganging [T1055.013]'
+  features:
+    - and:
+      - map memory
+      - remote thread

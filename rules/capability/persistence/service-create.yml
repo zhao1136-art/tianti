@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '安装系统服务'
+    namespace: 'persistence/service'
+    scope: 'process'
+    authors: [tianti]
+    description: '创建 Windows 服务以获得持久化与 SYSTEM 权限'
+    att&ck:
+      - 'Persistence::Create or Modify System Process Windows Service [T1543.003]'
+  features:
+    - create service

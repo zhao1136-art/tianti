@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: 'ATT&CK T1071 非标准端口 C2'
+    namespace: 'attack/command-and-control/non-standard-port'
+    scope: 'process'
+    authors: [tianti]
+    description: 'ATT&CK 视角的非常用端口外联'
+    att&ck:
+      - 'Command and Control::Application Layer Protocol [T1071]'
+  features:
+    - and:
+      - network connect
+      - not:
+        - port: [80, 443, 53]

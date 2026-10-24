@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '伪装为 svchost.exe'
+    namespace: 'defense-evasion/masquerade/svchost'
+    scope: 'process'
+    authors: [tianti]
+    description: '在非系统目录释放并使用 svchost.exe 名称伪装'
+    att&ck:
+      - 'Defense Evasion::Masquerading Match Legitimate Resource Name or Location [T1036.005]'
+  features:
+    - and:
+      - process create: '*\svchost.exe'
+      - not:
+        - process create: 'c:\windows\system32\svchost.exe'

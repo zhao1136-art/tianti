@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '创建命令行或脚本解释器子进程'
+    namespace: 'execution/shell/spawn'
+    scope: 'process'
+    authors: [tianti]
+    description: '创建 cmd/powershell 子进程执行载荷'
+    att&ck:
+      - 'Execution::Command and Scripting Interpreter [T1059]'
+  features:
+    - or:
+      - process create: '*\cmd.exe'
+      - process create: '*\powershell.exe'
+      - process create: '*\pwsh.exe'

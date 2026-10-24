@@ -1,0 +1,107 @@
+{
+  "schema": "tianti.qa.golden/1",
+  "updated": "2026-10-24",
+  "description": "golden trace 回归期望。verdict/score 期望来自 docs/PLAN.md §6.3 与 docs/THREAT_MODEL.md；rule_hints 为宽松提示（任一命中即可），用于验证规则引擎语义而非精确规则名。 required_detectors 为期望命中的检测器 id（缺失即视为检测语义回归）。",
+  "verdict_thresholds": {
+    "clean_below": 10,
+    "malicious_at": 40
+  },
+  "traces": {
+    "golden_ransom_sim.json": {
+      "event_count": 12,
+      "sample_type": "script/powershell",
+      "required": {
+        "registry": [
+          "set"
+        ],
+        "file": [
+          "write"
+        ],
+        "network": [
+          "connect"
+        ],
+        "process": [
+          "create"
+        ]
+      },
+      "rule_hints": [
+        "run",
+        "卷影",
+        "shadow",
+        "persist",
+        "ransom",
+        "持久化"
+      ],
+      "verdict_allowed": [
+        "malicious"
+      ],
+      "min_score": 40,
+      "max_score": null,
+      "required_detectors": [
+        "shadow_copy_delete",
+        "run_key_persistence",
+        "c2_connect"
+      ]
+    },
+    "golden_injection.json": {
+      "event_count": 10,
+      "sample_type": "pe32",
+      "required": {
+        "memory": [
+          "alloc",
+          "write"
+        ],
+        "thread": [
+          "remote_create"
+        ],
+        "security": [
+          "amsi"
+        ],
+        "network": [
+          "connect"
+        ]
+      },
+      "rule_hints": [
+        "注入",
+        "inject",
+        "amsi",
+        "virtualalloc",
+        "remote thread"
+      ],
+      "verdict_allowed": [
+        "malicious"
+      ],
+      "min_score": 40,
+      "max_score": null,
+      "required_detectors": [
+        "process_injection",
+        "amsi_etw_patch",
+        "c2_connect"
+      ]
+    },
+    "golden_benign_installer.json": {
+      "event_count": 8,
+      "sample_type": "pe64",
+      "required": {
+        "process": [
+          "create",
+          "exit"
+        ],
+        "file": [
+          "write"
+        ],
+        "network": [
+          "connect"
+        ]
+      },
+      "rule_hints": [],
+      "verdict_allowed": [
+        "clean",
+        "suspicious"
+      ],
+      "min_score": 0,
+      "max_score": 39,
+      "required_detectors": []
+    }
+  }
+}

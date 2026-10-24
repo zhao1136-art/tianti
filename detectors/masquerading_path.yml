@@ -1,0 +1,15 @@
+# 防御规避：伪装系统文件名（系统名 + 非系统目录）
+detector: masquerading_path
+name: 伪装系统文件名
+tactic: TA0005
+technique: T1036
+severity: medium
+score: 10
+match:
+  all:
+    - category: process
+      action: create
+      target: ['*\svchost.exe', '*\lsass.exe', '*\csrss.exe', '*\services.exe', '*\winlogon.exe', '*\explorer.exe', '*\smss.exe']
+    - not:
+        target: 'C:\Windows\*'
+evidence: events

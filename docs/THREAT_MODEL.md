@@ -15,11 +15,21 @@
 可信：引擎自身代码、规则包（需评审）、配置文件
 ```
 
-## 3. 隔离手段（M3 定稿）
+## 3. 隔离手段（M3 定稿：受限令牌 + 低完整性 + Job Object + 防火墙）
 
-候选 A：AppContainer（无网络能力、受限文件系统）——首选，验证点：能否启动任意 PE、能否写工作目录。
-候选 B：受限令牌（DISABLE_MAX_PRIVILEGES）+ Job Object（内存/CPU/进程数上限）+ 防火墙按程序阻断。
-两方案都必须有：工作目录重定向、超时强杀、进程树终止、执行后清理。
+最终选型（实测生效，红线用例通过）：
+
+- **受限令牌**：CreateRestrictedToken(DISABLE_MAX_PRIVILEGES)；
+- **低完整性**：TokenIntegrityLevel = SECURITY_MANDATORY_LOW_RID（S-1-16-4096），工作目录 icacls /setintegritylevel (OI)(CI)L；
+  低完整性使写入受限（含 C:\Windows），但**读/执行不受限**（不防读取，只防破坏）；
+- **Job Object**：内存/CPU/活动进程数上限 + JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE；Assign 失败即 fail-closed（绝不 Job 外执行）；
+- **网络**：netsh advfirewall 按程序 block in/out，add 后 show 校验，失败 fail-closed，finally 清理；
+- **兜底**：timeout_s+5s 硬杀线程（kill_tree + TerminateJobObject）+ 主等待全程 deadline + 根进程死亡校验；
+- **隔离声明**写入 trace.sandbox.isolation（restricted_token / integrity:low / job_object / fw_block_* / ...），
+  trace.extra.launch 记录根进程命令行，trace.extra.integrity 注明限制语义。
+
+已知限制：按程序防火墙只覆盖被启动镜像（如 powershell.exe），其拉起的其他 exe 外联不在规则内；
+低完整性不限制读取；本方案不是虚拟化隔离。
 
 ## 4. 红线（硬约束，不可绕过）
 

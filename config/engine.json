@@ -47,9 +47,7 @@
       "TA0011": 15,
       "TA0040": 20
     },
-    "whitelist_paths": [
-      "C:\\Windows\\"
-    ],
+    "whitelist_paths": [],
     "whitelist_sha256": []
   }
 }

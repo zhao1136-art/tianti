@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '利用系统程序绕过 UAC'
+    namespace: 'defense-evasion/uac-bypass'
+    scope: 'process'
+    authors: [tianti]
+    description: '通过 fodhelper/eventvwr/computerdefaults 自动提升链绕过 UAC'
+    att&ck:
+      - 'Privilege Escalation::Abuse Elevation Control Mechanism Bypass User Account Control [T1548.002]'
+  features:
+    - or:
+      - process create: '*\fodhelper.exe'
+      - process create: '*\eventvwr.exe'
+      - process create: '*\computerdefaults.exe'

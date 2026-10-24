@@ -1,0 +1,15 @@
+rule:
+  meta:
+    name: '使用压缩工具打包数据'
+    namespace: 'collection/staging/archive-utility'
+    scope: 'process'
+    authors: [tianti]
+    description: '调用 rar/7z/Compress-Archive 打包暂存收集的数据'
+    att&ck:
+      - 'Collection::Archive Collected Data [T1560]'
+  features:
+    - or:
+      - process create: '*\rar.exe'
+      - process create: '*\7z.exe'
+      - process create: '*\winrar.exe'
+      - string: '/compress-archive/i'

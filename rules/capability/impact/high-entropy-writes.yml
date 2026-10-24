@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: '批量高熵文件写入'
+    namespace: 'impact/ransomware/high-entropy-writes'
+    scope: 'process'
+    authors: [tianti]
+    description: '短时内多次写入高熵内容，疑似批量加密'
+    att&ck:
+      - 'Impact::Data Encrypted for Impact [T1486]'
+  features:
+    - count(write high entropy file): 3 or more

@@ -1,0 +1,14 @@
+rule:
+  meta:
+    name: '访问 LSASS 进程内存'
+    namespace: 'credential-access/lsass-access'
+    scope: 'process'
+    authors: [tianti]
+    description: '读取或转储 LSASS 内存以获取凭据'
+    att&ck:
+      - 'Credential Access::OS Credential Dumping LSASS Memory [T1003.001]'
+  features:
+    - or:
+      - api: MiniDumpWriteDump
+      - string: '/lsass/i'
+      - memory write: '*lsass*'

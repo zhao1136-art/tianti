@@ -1,0 +1,13 @@
+rule:
+  meta:
+    name: 'ATT&CK T1003.001 LSASS 内存转储'
+    namespace: 'attack/credential-access/lsass'
+    scope: 'process'
+    authors: [tianti]
+    description: 'ATT&CK 视角的 LSASS 凭据窃取'
+    att&ck:
+      - 'Credential Access::OS Credential Dumping LSASS Memory [T1003.001]'
+  features:
+    - or:
+      - api: MiniDumpWriteDump
+      - string: '/lsass/i'

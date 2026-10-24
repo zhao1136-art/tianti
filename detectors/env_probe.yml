@@ -1,0 +1,20 @@
+# 防御规避：环境/沙箱探测
+detector: env_probe
+name: 虚拟机/沙箱环境探测
+tactic: TA0005
+technique: T1497
+severity: medium
+score: 6
+match:
+  any:
+    - category: registry
+      action: [query]
+      target: ['*VBox*', '*VMware*', '*VirtualBox*', '*SandBox*', '*QEMU*']
+    - category: file
+      action: [read, open]
+      target: ['*\vbox*', '*\vmware*', '*\qemu*']
+    - category: process
+      action: create
+      arg:
+        command_line: ['*wmic*computersystem*', '*Get-WmiObject*Win32_ComputerSystem*', '*GetSystemInfo*']
+evidence: events

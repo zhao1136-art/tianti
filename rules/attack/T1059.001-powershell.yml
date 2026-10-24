@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: 'ATT&CK T1059.001 PowerShell 执行'
+    namespace: 'attack/execution/powershell'
+    scope: 'process'
+    authors: [tianti]
+    description: 'ATT&CK 视角的 PowerShell 脚本执行'
+    att&ck:
+      - 'Execution::Command and Scripting Interpreter PowerShell [T1059.001]'
+  features:
+    - string: '/powershell(\.exe)?\s+.*(-enc|-file|-command|frombase64)/i'

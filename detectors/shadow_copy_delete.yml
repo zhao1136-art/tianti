@@ -1,0 +1,17 @@
+# 影响：删除卷影副本/禁用恢复（critical）
+detector: shadow_copy_delete
+name: 删除卷影副本或禁用系统恢复
+tactic: TA0040
+technique: T1490
+severity: critical
+score: 26
+match:
+  any:
+    - category: process
+      action: create
+      arg:
+        command_line: ['*vssadmin*delete*shadows*', '*wbadmin*delete*catalog*', '*bcdedit*/set*recoveryenabled*no*', '*wmic*shadowcopy*delete*', '*powershell*Get-WmiObject*Win32_ShadowCopy*Delete*']
+    - category: service
+      action: [config, delete]
+      target: ['*VSS*', '*swprv*']
+evidence: events

@@ -1,0 +1,26 @@
+# 凭证：LSASS 访问/转储（critical）
+detector: lsass_access
+name: LSASS 访问或内存转储
+tactic: TA0006
+technique: T1003.001
+severity: critical
+score: 30
+match:
+  any:
+    - category: process
+      action: create
+      target: '*\lsass.exe'
+      arg:
+        command_line: ['*lsass*', '*procdump*']
+    - category: file
+      action: [create, write]
+      target: ['*lsass*.dmp', '*.dmp']
+    - category: api
+      action: call
+      arg:
+        api: ['*MiniDump*', 'OpenProcess']
+      target: '*lsass*'
+    - category: registry
+      action: query
+      target: '*lsass*'
+evidence: events

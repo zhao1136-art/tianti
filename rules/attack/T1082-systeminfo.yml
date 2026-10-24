@@ -1,0 +1,11 @@
+rule:
+  meta:
+    name: 'ATT&CK T1082 系统信息发现'
+    namespace: 'attack/discovery/system-info'
+    scope: 'process'
+    authors: [tianti]
+    description: 'ATT&CK 视角的主机信息收集'
+    att&ck:
+      - 'Discovery::System Information Discovery [T1082]'
+  features:
+    - process create: '*\systeminfo.exe'
