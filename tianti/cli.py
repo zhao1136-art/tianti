@@ -269,11 +269,18 @@ def _scan_one(
     cfg: Config,
     stem_override: str | None = None,
     include_upstream: bool = False,
+    expand_archives: bool = True,
 ) -> list[Path]:
     from .api import pipeline
     from .report import html, jsonr
 
-    result = pipeline.scan_path(path, policy=policy, config=cfg, include_upstream=include_upstream)
+    result = pipeline.scan_path(
+        path,
+        policy=policy,
+        config=cfg,
+        include_upstream=include_upstream,
+        expand_archives=expand_archives,
+    )
     common = stem_override or _result_common_name(jsonr.result_filename(result.sample_name))
     written: list[Path] = []
     if fmt in ("json", "both"):
@@ -282,6 +289,15 @@ def _scan_one(
         written.append(html.save_html(result, out_dir / f"{common}.report.html"))
     print(f"[{result.verdict.verdict}] {result.sample_name} score={result.verdict.score} "
           f"matches={len(result.matches)} hits={len(result.hits)}")
+    archive = (result.extra or {}).get("archive")
+    if isinstance(archive, dict):
+        if archive.get("expanded"):
+            print(
+                f"  压缩包: 已静态分析 {archive.get('count', 0)}/{archive.get('discovered', 0)} 个条目"
+                + ("（已截断）" if archive.get("truncated") else "")
+            )
+        elif archive.get("format") in ("archive/zip", "archive/rar", "archive/7z"):
+            print(f"  压缩包: 未展开（{archive.get('format')}），仅归档级静态分析")
     for item in written:
         print(f"  -> {item}")
     return written
@@ -318,6 +334,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
                     cfg=cfg,
                     stem_override=stem_override,
                     include_upstream=args.include_upstream,
+                    expand_archives=not args.no_archive_expand,
                 )
             except TiantiError as exc:
                 failed += 1
@@ -337,6 +354,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
         fmt=args.format,
         cfg=cfg,
         include_upstream=args.include_upstream,
+        expand_archives=not args.no_archive_expand,
     )
     return EXIT_OK
 
@@ -568,6 +586,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--include-upstream",
         action="store_true",
         help="加载 rules/upstream 官方 capa 规则（默认关闭，避免影响基线）",
+    )
+    p_scan.add_argument(
+        "--no-archive-expand",
+        action="store_true",
+        help="不解压 zip（只看归档级静态信号；默认展开 zip 逐条静态分析）",
     )
     p_scan.set_defaults(func=cmd_scan)
 

@@ -14,6 +14,8 @@ import importlib
 import inspect
 import json
 import platform as _platform
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -39,6 +41,14 @@ SCORING_ENTRIES = ("evaluate", "score", "score_trace")
 STATIC_MODULES = ("tianti.static.analyzer", "tianti.static.scanner", "tianti.static.api")
 STATIC_ENTRIES = ("analyze", "scan", "analyze_path")
 BACKEND_ORDER = ("containment", "replay", "emulation", "vm")
+
+# 压缩包展开安全上限（一层展开；嵌套压缩包只做归档级静态分析）
+MAX_ARCHIVE_ENTRIES = 100
+MAX_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
+MAX_ARCHIVE_FILE_BYTES = 32 * 1024 * 1024
+MAX_ARCHIVE_DEPTH = 2
+_ARCHIVE_TYPES = (SampleType.ARCHIVE_ZIP, SampleType.ARCHIVE_RAR, SampleType.ARCHIVE_7Z)
+_ARCHIVE_SUFFIXES = {".zip", ".rar", ".7z"}
 
 
 # --------------------------------------------------------------------- 导入与调用
@@ -467,6 +477,8 @@ def analyze_trace(
 
 
 # --------------------------------------------------------------------- 类型与执行能力
+# DLL/SYS/OCX/CPL/SCR 一律静态分析：containment 里的 DLL 加载实现（rundll32/regsvr32）
+# 只作为实验代码保留，**不接入 pipeline**。原因：rundll32 调用任意导出会崩溃，曾伴随 explorer 崩溃循环。
 _DYNAMIC_PE_SUFFIX_EXCLUDE = {".dll", ".sys", ".ocx", ".cpl", ".scr", ".drv", ".efi"}
 _DYNAMIC_SUFFIXES = {
     SampleType.SCRIPT_POWERSHELL: {".ps1"},
@@ -507,6 +519,348 @@ def _static_only_trace(sample: Sample, *, policy: str) -> Trace:
         sandbox=sandbox,
         builder=builder,
     )
+
+def _archive_rank(verdict: str) -> int:
+    return {"clean": 0, "suspicious": 1, "malicious": 2}.get(str(verdict), 0)
+
+
+def _safe_member_name(name: str) -> tuple[str, str]:
+    """校验 zip 条目路径；返回 (安全相对路径, 跳过原因)。"""
+    normalized = str(name or "").replace(chr(92), "/")
+    if not normalized:
+        return "", "空路径"
+    if normalized.startswith("/") or normalized.startswith("//"):
+        return "", "绝对路径"
+    if len(normalized) >= 2 and normalized[1] == ":":
+        return "", "盘符路径"
+    parts = [part for part in normalized.split("/") if part not in ("", ".")]
+    if not parts:
+        return "", "目录"
+    if any(part == ".." for part in parts):
+        return "", "路径穿越"
+    return "/".join(parts), ""
+
+
+def _member_is_symlink(info: zipfile.ZipInfo) -> bool:
+    try:
+        mode = (int(info.external_attr or 0) >> 16) & 0o170000
+    except (TypeError, ValueError):
+        return False
+    return mode == 0o120000
+
+
+def _archive_safe_filename(index: int, member_name: str) -> str:
+    base = member_name.rsplit("/", 1)[-1] or "entry.bin"
+    cleaned = "".join(ch if (ch.isalnum() or ch in "._-") else "_" for ch in base).strip("._-")
+    if not cleaned:
+        cleaned = "entry.bin"
+    return f"{index:04d}_{cleaned[:120]}"
+
+
+def _archive_entry_meta(entry_name: str, result: ScanResult, *, nested: bool) -> dict[str, Any]:
+    static = dict(result.static or {})
+    signals = [dict(item) for item in (static.get("signals") or []) if isinstance(item, dict)]
+    return {
+        "name": entry_name,
+        "size": int(result.sample.get("size") or 0),
+        "type": str(result.sample.get("type") or "unknown"),
+        "sha256": str(result.sample.get("sha256") or ""),
+        "verdict": result.verdict_name,
+        "score": round(float(result.verdict.score), 3),
+        "confidence": round(float(result.verdict.confidence), 3),
+        "signals": signals[:20],
+        "nested": bool(nested),
+    }
+
+
+def _analyze_archive_entry(
+    extracted: Path,
+    entry_name: str,
+    *,
+    cfg: Config,
+    policy: str | None,
+    include_upstream: bool,
+) -> ScanResult:
+    """单个压缩包条目：只做静态分析，绝不执行（即使条目是 exe）。"""
+    entry_sample = Sample.from_path(extracted)
+    entry_sample.name = entry_name
+    static_payload = run_static(extracted, config=cfg)
+    trace = _static_only_trace(entry_sample, policy=(policy or cfg.default_policy))
+    return analyze_trace(
+        trace,
+        static=static_payload,
+        config=cfg,
+        include_upstream=include_upstream,
+    )
+
+
+def _extract_zip_entries(zip_path: Path, workdir: Path) -> dict[str, Any]:
+    """安全展开 zip（一层）：防穿越/符号链接/目录，限条目数、单文件与总解压量。"""
+    result: dict[str, Any] = {
+        "entries": [],
+        "skipped": [],
+        "discovered": 0,
+        "truncated": False,
+        "expanded_bytes": 0,
+    }
+    try:
+        archive = zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, OSError, ValueError) as exc:
+        result["skipped"].append({"name": zip_path.name, "reason": f"压缩包解析失败: {exc}"})
+        result["truncated"] = True
+        return result
+
+    with archive:
+        infos = archive.infolist()
+        expanded = 0
+        for infos_index, info in enumerate(infos):
+            raw_name = info.filename
+            if info.is_dir() or str(raw_name).endswith("/"):
+                result["skipped"].append({"name": raw_name, "reason": "目录"})
+                continue
+            result["discovered"] += 1
+            if len(result["entries"]) >= MAX_ARCHIVE_ENTRIES:
+                result["truncated"] = True
+                result["skipped"].append({"name": raw_name, "reason": f"超出条目上限 {MAX_ARCHIVE_ENTRIES}"})
+                continue
+            safe_name, reason = _safe_member_name(raw_name)
+            if reason:
+                result["skipped"].append({"name": raw_name, "reason": reason})
+                continue
+            if _member_is_symlink(info):
+                result["skipped"].append({"name": safe_name, "reason": "符号链接"})
+                continue
+            if int(info.flag_bits or 0) & 0x1:
+                result["skipped"].append({"name": safe_name, "reason": "加密条目"})
+                continue
+            declared = int(info.file_size or 0)
+            if declared > MAX_ARCHIVE_FILE_BYTES:
+                result["skipped"].append(
+                    {"name": safe_name, "reason": f"单文件超过上限 {MAX_ARCHIVE_FILE_BYTES} 字节"}
+                )
+                continue
+            if expanded + declared > MAX_ARCHIVE_TOTAL_BYTES:
+                result["truncated"] = True
+                result["skipped"].append(
+                    {"name": safe_name, "reason": f"总解压量超过上限 {MAX_ARCHIVE_TOTAL_BYTES} 字节"}
+                )
+                continue
+            filename = _archive_safe_filename(infos_index + 1, safe_name)
+            target = workdir / filename
+            written = 0
+            try:
+                with archive.open(info) as source, target.open("wb") as dest:
+                    while True:
+                        chunk = source.read(64 * 1024)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        if written > MAX_ARCHIVE_FILE_BYTES:
+                            raise ValueError(f"单文件超过上限 {MAX_ARCHIVE_FILE_BYTES} 字节")
+                        if expanded + written > MAX_ARCHIVE_TOTAL_BYTES:
+                            raise OverflowError(f"总解压量超过上限 {MAX_ARCHIVE_TOTAL_BYTES} 字节")
+                        dest.write(chunk)
+            except OverflowError as exc:
+                target.unlink(missing_ok=True)
+                result["truncated"] = True
+                result["skipped"].append({"name": safe_name, "reason": str(exc)})
+                continue
+            except (RuntimeError, ValueError, OSError, zipfile.BadZipFile) as exc:
+                target.unlink(missing_ok=True)
+                result["skipped"].append({"name": safe_name, "reason": f"解压失败: {exc}"})
+                continue
+            expanded += written
+            result["expanded_bytes"] = expanded
+            result["entries"].append(
+                {
+                    "name": safe_name,
+                    "path": target,
+                    "size": written,
+                    "nested": Path(safe_name).suffix.lower() in _ARCHIVE_SUFFIXES,
+                }
+            )
+    return result
+
+
+def _build_archive_result(
+    target: Path,
+    sample: Sample,
+    static_payload: dict[str, Any],
+    *,
+    cfg: Config,
+    policy: str | None,
+    include_upstream: bool,
+    expanded: bool,
+    expanded_entries: list[tuple[dict[str, Any], ScanResult]] | None = None,
+    extract_info: dict[str, Any] | None = None,
+) -> ScanResult:
+    trace = _static_only_trace(sample, policy=(policy or cfg.default_policy))
+    result = analyze_trace(
+        trace,
+        static=static_payload,
+        config=cfg,
+        include_upstream=include_upstream,
+    )
+    result.extra["input"] = "static-only"
+    result.extra["backend"] = {
+        "backend": "static",
+        "requested": policy or cfg.default_policy,
+        "fallback": False,
+        "attempts": [],
+    }
+    archive_info: dict[str, Any] = {
+        "expanded": bool(expanded),
+        "format": sample.type.value,
+        "count": 0,
+        "discovered": 0,
+        "entries": [],
+        "skipped": [],
+        "truncated": False,
+        "expanded_bytes": 0,
+        "max_entries": MAX_ARCHIVE_ENTRIES,
+        "max_total_bytes": MAX_ARCHIVE_TOTAL_BYTES,
+        "max_file_bytes": MAX_ARCHIVE_FILE_BYTES,
+        "max_depth": MAX_ARCHIVE_DEPTH,
+    }
+    notes: list[str] = []
+    if expanded and extract_info is not None and expanded_entries is not None:
+        entries = [meta for meta, _ in expanded_entries]
+        archive_info.update(
+            {
+                "count": len(entries),
+                "discovered": int(extract_info.get("discovered") or 0),
+                "entries": entries,
+                "skipped": list(extract_info.get("skipped") or []),
+                "truncated": bool(extract_info.get("truncated")),
+                "expanded_bytes": int(extract_info.get("expanded_bytes") or 0),
+            }
+        )
+        if expanded_entries:
+            worst_meta, worst_result = max(
+                expanded_entries,
+                key=lambda pair: (_archive_rank(pair[0].get("verdict", "")), float(pair[0].get("score") or 0.0)),
+            )
+            tactics: set[str] = set()
+            techniques: set[str] = set()
+            for _, entry_result in expanded_entries:
+                tactics.update(entry_result.verdict.tactics)
+                techniques.update(entry_result.verdict.techniques)
+            confidence = max(
+                float(entry_result.verdict.confidence) for _, entry_result in expanded_entries
+            )
+            worst_score = max(float(entry.verdict.score) for _, entry in expanded_entries)
+            items = list(result.verdict.items)
+            items.append(
+                ScoreItem(
+                    kind="static",
+                    ref=f"archive/{worst_meta.get('name', '')}",
+                    score=float(worst_meta.get("score") or 0.0),
+                    detail=(
+                        f"压缩包最严重条目（汇总取 max）：{worst_meta.get('name', '')} "
+                        f"{worst_meta.get('verdict', '')} score={worst_meta.get('score', 0)}"
+                    ),
+                )
+            )
+            result.verdict.verdict = str(worst_meta.get("verdict") or result.verdict.verdict)
+            result.verdict.score = round(worst_score, 3)
+            result.verdict.confidence = round(min(1.0, confidence), 3)
+            result.verdict.tactics = sorted(tactics)
+            result.verdict.techniques = sorted(techniques)
+            result.verdict.items = items
+            notes.append(
+                f"压缩包内共 {archive_info['discovered']} 个文件，已静态分析 {len(entries)} 个，"
+                f"最严重条目 {worst_meta.get('name', '')}（score={worst_meta.get('score', 0):.2f}，"
+                f"{worst_meta.get('verdict', '')}）"
+            )
+            notes.append("压缩包条目只做静态分析（不执行），避免批量可执行文件动态执行；结论置信度按静态信号加权。")
+        else:
+            notes.append(
+                f"压缩包内共 {archive_info['discovered']} 个文件，安全限制下未静态分析任何条目，"
+                "仅归档级静态信号可用。"
+            )
+        if archive_info["truncated"]:
+            notes.append(
+                f"压缩包展开触发安全上限（条目<={MAX_ARCHIVE_ENTRIES}、总量<={MAX_ARCHIVE_TOTAL_BYTES} 字节），"
+                "结果已截断（truncated=True），仅分析前部条目。"
+            )
+        if archive_info["skipped"]:
+            notes.append(
+                f"跳过 {len(archive_info['skipped'])} 个条目（路径穿越/符号链接/目录/加密/超限等），详见 extra.archive.skipped。"
+            )
+        nested_names = [meta["name"] for meta in entries if meta.get("nested")]
+        if nested_names:
+            notes.append(
+                f"嵌套压缩包仅做归档级静态分析、不递归解压（深度上限 {MAX_ARCHIVE_DEPTH}）："
+                + ", ".join(nested_names[:5])
+            )
+    else:
+        if sample.type == SampleType.ARCHIVE_ZIP:
+            notes.append("已禁用压缩包展开（--no-archive-expand），仅归档级静态分析。")
+        elif sample.type in (SampleType.ARCHIVE_RAR, SampleType.ARCHIVE_7Z):
+            notes.append(
+                f"{sample.type.value} 压缩包无解压能力（仅支持 zip 一层展开），仅归档级静态分析。"
+            )
+        else:
+            notes.append(f"压缩包类型 {sample.type.value} 未展开，仅归档级静态分析。")
+        if static_payload.get("available") is False:
+            notes.append(f"静态分析不可用：{static_payload.get('reason', '未知原因')}")
+    result.extra["archive"] = archive_info
+    existing_notes = [str(note) for note in (result.notes or []) if str(note).strip()]
+    result.notes = notes + [note for note in existing_notes if note not in notes]
+    result.extra["source_path"] = str(target)
+    return result
+
+
+def _scan_archive(
+    target: Path,
+    sample: Sample,
+    static_payload: dict[str, Any],
+    *,
+    cfg: Config,
+    policy: str | None,
+    include_upstream: bool,
+) -> ScanResult:
+    """zip 安全展开 -> 逐条目静态分析 -> 聚合判定（最严重条目 + max 分数）。"""
+    with tempfile.TemporaryDirectory(prefix="tianti_zip_") as tmp:
+        workdir = Path(tmp)
+        extract_info = _extract_zip_entries(target, workdir)
+        expanded_entries: list[tuple[dict[str, Any], ScanResult]] = []
+        for entry in extract_info.get("entries") or []:
+            extracted = Path(entry.get("path") or "")
+            if not extracted.exists():
+                continue
+            try:
+                entry_result = _analyze_archive_entry(
+                    extracted,
+                    str(entry.get("name") or extracted.name),
+                    cfg=cfg,
+                    policy=policy,
+                    include_upstream=include_upstream,
+                )
+            except Exception as exc:  # 单条目异常隔离
+                extract_info.setdefault("skipped", []).append(
+                    {"name": entry.get("name", ""), "reason": f"静态分析异常: {exc}"}
+                )
+                continue
+            meta = _archive_entry_meta(
+                str(entry.get("name") or extracted.name),
+                entry_result,
+                nested=bool(entry.get("nested")),
+            )
+            meta["size"] = int(entry.get("size") or meta.get("size") or 0)
+            expanded_entries.append((meta, entry_result))
+        return _build_archive_result(
+            target,
+            sample,
+            static_payload,
+            cfg=cfg,
+            policy=policy,
+            include_upstream=include_upstream,
+            expanded=True,
+            expanded_entries=expanded_entries,
+            extract_info=extract_info,
+        )
+
 
 def _is_trace_file(path: Path) -> bool:
     try:
@@ -624,6 +978,7 @@ def scan_path(
     policy: str | None = None,
     config: Config | None = None,
     include_upstream: bool = False,
+    expand_archives: bool = True,
 ) -> ScanResult:
     """一条命令完成扫描：trace JSON -> 离线分析；其他文件 -> 静态 + 沙箱 + 分析。"""
     cfg = config or Config.load()
@@ -648,6 +1003,25 @@ def scan_path(
 
     static_payload = run_static(target, config=cfg)
     sample = Sample.from_path(target)
+    if sample.type == SampleType.ARCHIVE_ZIP and expand_archives:
+        return _scan_archive(
+            target,
+            sample,
+            static_payload,
+            cfg=cfg,
+            policy=policy,
+            include_upstream=include_upstream,
+        )
+    if sample.type in _ARCHIVE_TYPES:
+        return _build_archive_result(
+            target,
+            sample,
+            static_payload,
+            cfg=cfg,
+            policy=policy,
+            include_upstream=include_upstream,
+            expanded=False,
+        )
     if not dynamically_executable(sample):
         trace = _static_only_trace(sample, policy=(policy or cfg.default_policy))
         result = analyze_trace(trace, static=static_payload, config=cfg, include_upstream=include_upstream)

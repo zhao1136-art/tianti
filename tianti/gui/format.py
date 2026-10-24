@@ -168,6 +168,60 @@ def static_signal_rows(result: ScanResult) -> list[dict[str, Any]]:
     return rows
 
 
+def archive_rows(result: ScanResult) -> list[dict[str, Any]]:
+    """压缩包条目列表（来自 pipeline 的 extra.archive.entries）。"""
+    extra = dict(result.extra or {})
+    archive = dict(extra.get("archive") or {})
+    rows: list[dict[str, Any]] = []
+    for entry in archive.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        rows.append(
+            {
+                "name": str(entry.get("name", "")),
+                "type": str(entry.get("type", "")),
+                "size": int(entry.get("size") or 0),
+                "verdict": str(entry.get("verdict", "")),
+                "verdict_label": verdict_label(str(entry.get("verdict", ""))),
+                "score": float(entry.get("score") or 0.0),
+                "sha256": str(entry.get("sha256", "")),
+                "signals": len(entry.get("signals") or []),
+                "nested": bool(entry.get("nested")),
+            }
+        )
+    return rows
+
+
+def archive_summary_lines(result: ScanResult, *, limit: int = 50) -> list[str]:
+    """GUI 摘要里的【压缩包内容】表格文本（最多 limit 条）。"""
+    extra = dict(result.extra or {})
+    archive = dict(extra.get("archive") or {})
+    if not archive:
+        return []
+    rows = archive_rows(result)
+    discovered = int(archive.get("discovered") or len(rows))
+    truncated = bool(archive.get("truncated"))
+    lines = [
+        "",
+        f"【压缩包内容】共 {discovered} 个文件，已静态分析 {len(rows)} 个"
+        + ("（已触发上限，结果截断）" if truncated else ""),
+        f"  {'名称':<44}{'类型':<16}{'大小':>10}  {'判定':<4}{'分数':>7}",
+    ]
+    for row in rows[:limit]:
+        lines.append(
+            f"  {row['name'][:44]:<44}{row['type'][:16]:<16}{_human_size(row['size']):>10}  "
+            f"{row['verdict_label']:<4}{row['score']:>8.2f}"
+        )
+    if len(rows) > limit:
+        lines.append(f"  ...（仅显示前 {limit} 条，共 {len(rows)} 条）")
+    skipped = archive.get("skipped") or []
+    if skipped:
+        lines.append(f"  跳过 {len(skipped)} 个条目（路径穿越/符号链接/目录/加密/超限等）")
+    if archive.get("expanded") is False:
+        lines.append(f"  未展开：{archive.get('format', '压缩包')} 仅归档级静态分析")
+    return lines
+
+
 def summary_text(result: ScanResult) -> str:
     parts: list[str] = ["【样本】", *sample_lines(result), "", "【评分明细】", *verdict_lines(result)]
     signals = static_signal_rows(result)
@@ -175,6 +229,7 @@ def summary_text(result: ScanResult) -> str:
         parts.extend(["", f"【静态信号】共 {len(signals)} 条"])
         for row in signals[:40]:
             parts.append(f"  {row['severity']:<8} {row['id']}  {row['detail']}")
+    parts.extend(archive_summary_lines(result))
     notes = [str(note) for note in (result.notes or []) if str(note).strip()]
     if notes:
         parts.extend(["", "【备注】", *[f"  - {note}" for note in notes]])

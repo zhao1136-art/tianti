@@ -133,7 +133,7 @@ class ContainmentIntegrationTests(unittest.TestCase):
 
     def test_low_integrity_limits_write_not_read_or_execute(self) -> None:
         """integrity:low：写系统目录被拒；读/执行不受限；工作目录写入正常。"""
-        probe = Path(r"C:Windows	ianti_sandbox_lowil_probe.txt")
+        probe = Path(r"C:\Windows\tianti_sandbox_lowil_probe.txt")
         self.addCleanup(lambda: probe.unlink() if probe.exists() else None)
         trace, elapsed = self._run("low_integrity_probe.ps1")
         self.assertIn("integrity:low", trace.sandbox.isolation)
@@ -148,6 +148,52 @@ class ContainmentIntegrationTests(unittest.TestCase):
         self.assertFalse(probe.exists(), "系统目录探针文件不应存在")
         self.assertLess(elapsed, 30.0)
         self._assert_no_residual(trace)
+
+    @unittest.skipUnless(
+        os.environ.get("TIANTI_TEST_DLL_LOADING") == "1",
+        "DLL 动态加载实验默认关闭：rundll32 调用任意导出会崩溃，且与 explorer 崩溃循环时间重合",
+    )
+    def test_dll_sample_runs_via_rundll32(self) -> None:
+        """DLL 样本应通过 rundll32.exe 动态加载，产出合法 Trace 且无残留进程（需显式开启）。"""
+        version_dll = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "version.dll"
+        if not version_dll.is_file():
+            self.skipTest("系统缺少 version.dll")
+        policy = SandboxPolicy(
+            name="dll",
+            timeout_s=5,
+            mem_mb=512,
+            cpu_s=5,
+            network="blocked",
+            workdir_root=self.tmp,
+        )
+        started = time.monotonic()
+        trace = self.backend.run(Sample.from_path(version_dll), policy)
+        elapsed = time.monotonic() - started
+        trace.validate()
+
+        process_creates = [
+            event for event in trace.events if event.category == "process" and event.action == "create"
+        ]
+        self.assertTrue(process_creates, "DLL 执行缺少 process create 事件")
+        self.assertIn(
+            trace.sandbox.terminated_by,
+            ("exited", "timeout", "killed"),
+            f"terminated_by 异常: {trace.sandbox.terminated_by}",
+        )
+
+        loader = trace.extra.get("dll_loader") or {}
+        self.assertEqual(loader.get("launcher"), "rundll32")
+        export = loader.get("export")
+        self.assertIsInstance(export, str)
+        self.assertTrue(export)
+        launch = trace.extra.get("launch") or {}
+        command_line = str(launch.get("command_line", ""))
+        self.assertIn("rundll32", command_line.lower())
+        self.assertIn("," + export, command_line)
+        self.assertIn("version.dll", command_line)
+        self.assertLess(elapsed, 30.0)
+        self._assert_no_residual(trace)
+        json.dumps(trace.to_dict(), ensure_ascii=False)
 
 
 class SnapshotTests(unittest.TestCase):

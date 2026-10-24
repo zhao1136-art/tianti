@@ -529,6 +529,68 @@ def _render_fidelity(result: ScanResult) -> str:
     return _section("fidelity", "观测保真度", body)
 
 
+def _render_archive(result: ScanResult) -> str:
+    extra = result.extra if isinstance(result.extra, dict) else {}
+    archive = extra.get("archive")
+    if not isinstance(archive, dict):
+        return ""
+    entries = archive.get("entries") or []
+    if not entries and archive.get("expanded") is not False:
+        return ""
+    discovered = int(archive.get("discovered") or len(entries))
+    summary = (
+        f"共 {discovered} 个文件，已静态分析 {len(entries)} 个"
+        + ("（已触发上限，结果截断）" if archive.get("truncated") else "")
+        + f" · 解压 {int(archive.get('expanded_bytes') or 0)} 字节"
+    )
+    if entries:
+        rows: list[str] = []
+        for entry in entries[:100]:
+            if not isinstance(entry, dict):
+                continue
+            verdict = str(entry.get("verdict") or "")
+            rows.append(
+                "<tr>"
+                f"<td><code>{esc(entry.get('name'))}</code></td>"
+                f"<td><code>{esc(entry.get('type'))}</code></td>"
+                f'<td class="num">{esc(entry.get("size"))}</td>'
+                f'<td><span class="badge {esc(_css_token(str(entry.get("verdict") or "medium")))}">'
+                f"{esc(_VERDICT_ZH.get(verdict, verdict))}</span></td>"
+                f'<td class="num">{esc(entry.get("score"))}</td>'
+                f'<td class="num">{esc(len(entry.get("signals") or []))}</td>'
+                "</tr>"
+            )
+        body = (
+            f'<div class="small" style="margin-bottom:10px">{esc(summary)}</div>'
+            '<div class="table-wrap"><table><thead><tr><th>条目</th><th>类型</th>'
+            '<th class="num">大小（字节）</th><th>判定</th><th class="num">分数</th><th>信号数</th>'
+            "</tr></thead><tbody>" + "".join(rows) + "</tbody></table></div>"
+        )
+        if len(entries) > 100:
+            body += f'<div class="small">仅展示前 100 条，共 {len(entries)} 条。</div>'
+    else:
+        body = (
+            f'<div class="notice">{esc(summary)}；未展开或无可分析条目，'
+            "仅归档级静态信号可用。</div>"
+        )
+    skipped = archive.get("skipped") or []
+    if skipped:
+        names = "；".join(
+            f"{esc(item.get('name'))}（{esc(item.get('reason'))}）"
+            for item in skipped[:10]
+            if isinstance(item, dict)
+        )
+        body += f'<div class="small" style="margin-top:8px">跳过 {len(skipped)} 个条目：{names}</div>'
+    if archive.get("expanded") is False:
+        body += f'<div class="small">未展开：{esc(archive.get("format"))} 仅归档级静态分析。</div>'
+    return _section(
+        "archive",
+        "压缩包内容",
+        body,
+        hint="zip 默认一层安全展开并逐条目静态分析（不执行）；rar/7z 不支持解压。",
+    )
+
+
 def _render_timeline(result: ScanResult, *, max_events: int = 200) -> str:
     events = result.events
     if not events:
@@ -793,6 +855,7 @@ def render_html(
             _render_static(result),
             _render_sandbox(result),
             _render_fidelity(result),
+            _render_archive(result),
             _render_timeline(result, max_events=max_events),
             _render_capabilities(result),
             _render_behaviors(result),

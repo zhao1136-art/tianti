@@ -1,8 +1,8 @@
 """静态预筛入口：StaticReport + analyze(sample, data=None)。
 
 analyze 接受 Sample / 路径(str|Path) / bytes，按类型分派到
-pe / scripts / archive / strings 子分析器，汇总为可 JSON 序列化的 StaticReport。
-绝不执行样本内容。
+pe / scripts / archive / office / strings 子分析器，汇总为可 JSON 序列化的 StaticReport。
+Office 类型额外产出 office 字段（OOXML/OLE 宏提取）。绝不执行样本内容。
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from typing import Any
 from ..core.errors import SampleError
 from ..core.hashing import hash_bytes, hash_file
 from ..core.model import Sample, SampleType
-from . import archive, known, pe, scripts, strings
+from . import archive, known, office, pe, scripts, strings
 from .util import merge_signals, shannon_entropy, signal
 
 MAX_ANALYZE_BYTES = 16 * 1024 * 1024
@@ -52,6 +52,7 @@ class StaticReport:
     ioc_hits: list[dict[str, str]] = field(default_factory=list)
     archive: dict[str, Any] | None = None
     script: dict[str, Any] | None = None
+    office: dict[str, Any] | None = None
     known_test_file: str = ""
     truncated: bool = False
     elapsed_ms: float = 0.0
@@ -91,6 +92,7 @@ class StaticReport:
             "ioc_hits": [dict(item) for item in self.ioc_hits],
             "archive": self.archive,
             "script": self.script,
+            "office": self.office,
             "known_test_file": self.known_test_file,
             "truncated": bool(self.truncated),
             "elapsed_ms": round(float(self.elapsed_ms), 3),
@@ -191,6 +193,11 @@ def analyze(sample: Sample | str | Path | bytes | bytearray | memoryview, data: 
         # 2) 类型分派
         sample_type = resolved.type
         is_pe_by_magic = raw[:2] == b"MZ"
+        office_name_kind = office.office_kind_from_name(resolved.name)
+        is_office_input = sample_type in OFFICE_TYPES or (
+            office_name_kind != ""
+            and (raw[:4] == b"PK\x03\x04" or raw[:8] == office.CFB_MAGIC)
+        )
         if sample_type in PE_TYPES or is_pe_by_magic:
             try:
                 info = pe.parse_pe(raw, truncated=truncated)
@@ -207,6 +214,25 @@ def analyze(sample: Sample | str | Path | bytes | bytearray | memoryview, data: 
                 signals_all.extend(script_result["signals"])
             except Exception as exc:
                 signals_all.append(signal("static.analysis_error", "low", f"脚本分析异常：{type(exc).__name__}: {exc}"))
+        elif is_office_input:
+            try:
+                office_result = office.analyze_office(raw, resolved.name)
+                report.office = office_result
+                signals_all.extend(office_result.get("signals") or [])
+                # OOXML 同时复用压缩包清单检查（路径穿越/内嵌可执行等），宏信号由 office 层统一给出
+                if raw[:4] == b"PK\x03\x04":
+                    try:
+                        archive_result = archive.analyze_archive(raw, name=resolved.name, sample_type="zip")
+                        report.archive = archive_result
+                        signals_all.extend(
+                            item for item in archive_result["signals"] if item.get("id") != "archive.macro_container"
+                        )
+                    except Exception as exc:
+                        signals_all.append(
+                            signal("static.analysis_error", "low", f"Office 压缩容器分析异常：{type(exc).__name__}: {exc}")
+                        )
+            except Exception as exc:
+                signals_all.append(signal("static.analysis_error", "low", f"Office 宏分析异常：{type(exc).__name__}: {exc}"))
         elif sample_type in ARCHIVE_TYPES:
             try:
                 archive_result = archive.analyze_archive(raw, name=resolved.name, sample_type=sample_type.value)
@@ -214,18 +240,9 @@ def analyze(sample: Sample | str | Path | bytes | bytearray | memoryview, data: 
                 signals_all.extend(archive_result["signals"])
             except Exception as exc:
                 signals_all.append(signal("static.analysis_error", "low", f"压缩包分析异常：{type(exc).__name__}: {exc}"))
-        elif sample_type in OFFICE_TYPES and raw[:4] == b"PK\x03\x04":
-            try:
-                archive_result = archive.analyze_archive(raw, name=resolved.name, sample_type="zip")
-                report.archive = archive_result
-                signals_all.extend(archive_result["signals"])
-            except Exception as exc:
-                signals_all.append(signal("static.analysis_error", "low", f"Office 容器分析异常：{type(exc).__name__}: {exc}"))
 
-        # 3) 字符串 / IoC（压缩包内容不解压，跳过）
-        is_archive_like = sample_type in ARCHIVE_TYPES or (
-            sample_type in OFFICE_TYPES and raw[:4] == b"PK\x03\x04"
-        )
+        # 3) 字符串 / IoC（压缩包/Office 容器内容不解压，跳过）
+        is_archive_like = sample_type in ARCHIVE_TYPES or is_office_input
         if not is_archive_like:
             try:
                 string_result = strings.analyze_strings(raw)

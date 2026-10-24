@@ -18,6 +18,7 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -232,6 +233,12 @@ class TiantiApp:
         self.det_tree, self.det_frame = self._add_tree_tab("危险行为", ("name", "severity", "score", "tactic", "technique", "evidence"), ("检测器", "严重度", "分数", "战术", "技术", "证据数"), (200, 70, 70, 80, 90, 60))
         self.timeline_text = self._add_text_tab("事件时间线")
         self.signal_tree, self.signal_frame = self._add_tree_tab("静态信号", ("id", "severity", "score", "detail"), ("信号", "严重度", "分数", "说明"), (220, 70, 60, 420))
+        self.archive_tree, self.archive_frame = self._add_tree_tab(
+            "压缩包",
+            ("name", "type", "size", "verdict", "score"),
+            ("条目", "类型", "大小", "判定", "分数"),
+            (260, 130, 90, 70, 70),
+        )
         self.raw_text = self._add_text_tab("原始 JSON")
         self.notes_text = self._add_text_tab("备注")
 
@@ -341,7 +348,7 @@ class TiantiApp:
             self.tree.delete(iid)
         for iid in self.matrix_tree.get_children():
             self.matrix_tree.delete(iid)
-        for tree in (self.cap_tree, self.det_tree, self.signal_tree):
+        for tree in (self.cap_tree, self.det_tree, self.signal_tree, self.archive_tree):
             for iid in tree.get_children():
                 tree.delete(iid)
         for widget in (self.timeline_text, self.raw_text, self.notes_text):
@@ -474,7 +481,15 @@ class TiantiApp:
             if self.cancel_requested.is_set():
                 self.queue.put(("stopped", None))
                 break
-            self.queue.put(("status", f"[{index}/{len(files)}] 正在分析 {path.name} …"))
+            status = f"[{index}/{len(files)}] 正在分析 {path.name} …"
+            if path.suffix.lower() == ".zip":
+                entry_count = _zip_entry_count(path)
+                if entry_count:
+                    status = (
+                        f"[{index}/{len(files)}] 正在分析压缩包内 {entry_count} 个文件 "
+                        f"（{path.name}）…"
+                    )
+            self.queue.put(("status", status))
             try:
                 result = self._analyze_one(
                     path, mode, policy, include_upstream, index=index, total=len(files)
@@ -670,6 +685,19 @@ class TiantiApp:
             [(row["id"], row["severity"], f"{row['score']:.1f}", row["detail"]) for row in fmt.static_signal_rows(result)],
         )
         self._sig_rows = fmt.static_signal_rows(result)
+        self._fill_tree(
+            self.archive_tree,
+            [
+                (
+                    row["name"],
+                    row["type"],
+                    fmt._human_size(row["size"]),
+                    row["verdict_label"],
+                    f"{row['score']:.2f}",
+                )
+                for row in fmt.archive_rows(result)
+            ],
+        )
         timeline = [fmt.event_line(row) for row in fmt.event_rows(result)]
         if len(result.events) > 3000:
             timeline.append(f"...（共 {len(result.events)} 条事件，仅显示前 3000 条；完整事件见原始 JSON）")
@@ -807,6 +835,15 @@ class TiantiApp:
                 self.root.after(200, self.root.destroy)
 
         self.root.after(delay_ms, grab)
+
+
+def _zip_entry_count(path: Path) -> int:
+    """只读 zip 中央目录统计文件条目数；异常返回 0（不展开内容）。"""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return sum(1 for info in archive.infolist() if not info.is_dir())
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return 0
 
 
 def _looks_like_trace(path: Path) -> bool:

@@ -330,7 +330,11 @@ class ArchiveTests(unittest.TestCase):
     def test_office_zip_macro(self):
         data = build_zip({"word/document.xml": b"<xml/>", "word/vbaProject.bin": b"VBA"})
         report = analyze_bytes(data, "report.docx")
-        self.assertIn("archive.macro_container", report.signal_ids)
+        self.assertTrue(report.office and report.office["has_macros"])
+        self.assertEqual(report.office["container"], "ooxml")
+        self.assertIn("office.macro_present", report.signal_ids)
+        # 宏信号由 office 层统一给出，避免与 archive.macro_container 重复计分
+        self.assertNotIn("archive.macro_container", report.signal_ids)
 
     def test_malformed_zip(self):
         report = analyze_bytes(b"PK\x03\x04" + b"\x00" * 20, "bad.zip")

@@ -42,7 +42,8 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 ## 支持哪些输入
 
 - 动态执行：PE32/PE64 `.exe`、`.ps1`、`.bat/.cmd`、`.js`、`.vbs`；
-- 仅静态：DLL/SYS、zip/rar/7z、Office、PDF、文本/Markdown/JSON、图片等（不执行，自动回落静态分析并在备注标明）；
+- 仅静态：DLL/SYS（DLL 加载实验代码保留但未接入）、rar/7z、Office、PDF、文本/Markdown/JSON、图片等（不执行，自动回落静态分析并在备注标明）；
+- zip 会展开逐条目静态分析（有安全上限，不执行条目）；
 - 离线回放：`tianti.trace/1` 轨迹 JSON；CAPE/capa 报告先用 `convert-cape` 转轨迹。
 
 ## 已知限制

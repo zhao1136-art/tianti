@@ -19,6 +19,13 @@
 - AssignProcessToJobObject 失败即杀树并 fail-closed，不允许进程在 Job 外执行；
 - finally 中 TerminateJobObject + kill_tree 双保险，并校验根进程已死。
 
+DLL 动态执行（M3+）：
+- .dll 后缀或 IMAGE_FILE_DLL 特征的 PE：解析导出表取第一个函数名导出，用
+  rundll32.exe "<copy>",<export> 启动；无函数名导出（或 rundll32 不可用）回退
+  regsvr32.exe /s "<copy>"；两者都不可用则 SandboxUnavailable（fail-closed）。
+- trace.extra.dll_loader = {launcher, export, export_count, note}。
+- 已知限制：按程序防火墙绑定的是启动器（rundll32.exe / regsvr32.exe），不是 DLL 本身。
+
 观测主路径：快照 diff + 进程树/连接表轮询（source=snapshot:/poll:）；
 ETW 默认关闭（实测开销超预算，见 telemetry_etw.py），可显式开启，失败优雅降级。
 """
@@ -33,6 +40,7 @@ import subprocess
 import threading
 import time
 from ctypes import wintypes as wt
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -58,6 +66,8 @@ JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
 JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3
 MB = 1024 * 1024
 ACTIVE_PROCESS_LIMIT = 16
+IMAGE_FILE_DLL = 0x2000
+DLL_SAMPLE_LIMIT_BYTES = 64 * MB  # 超过则不解析导出，直接回退 regsvr32
 
 
 class _LARGE_INTEGER(ctypes.Structure):
@@ -307,30 +317,227 @@ def _cmd_path() -> str:
     return os.environ.get("ComSpec", "cmd.exe")
 
 
-def _build_command(sample: Sample, sample_copy: Path) -> tuple[str, str]:
-    """返回 (实际启动的程序路径, 命令行)。只允许已知无害的脚本/PE 类型。"""
+@dataclass(frozen=True)
+class _LaunchSpec:
+    """实际启动方式：程序路径 + 命令行 + DLL 加载器信息（非 DLL 为 None）。"""
+
+    program: str
+    command_line: str
+    dll_loader: dict[str, Any] | None = None
+
+
+def _system32_tool(name: str) -> str | None:
+    candidate = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / name
+    if candidate.is_file():
+        return str(candidate)
+    return shutil.which(name)
+
+
+def _pe_is_dll(path: Path) -> bool:
+    """只读文件头判断 IMAGE_FILE_DLL 特征（用于无 .dll 后缀的 DLL 样本）。"""
+    try:
+        with path.open("rb") as handle:
+            head = handle.read(256 * 1024)
+    except OSError:
+        return False
+    try:
+        if len(head) < 0x40 or head[:2] != b"MZ":
+            return False
+        e_lfanew = int.from_bytes(head[0x3C:0x40], "little")
+        if e_lfanew <= 0 or e_lfanew + 24 > len(head):
+            return False
+        if head[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
+            return False
+        characteristics = int.from_bytes(head[e_lfanew + 4 + 18 : e_lfanew + 4 + 20], "little")
+        return bool(characteristics & IMAGE_FILE_DLL)
+    except (ValueError, IndexError):
+        return False
+
+
+def _read_sample_bytes(path: Path) -> tuple[bytes, str]:
+    try:
+        size = path.stat().st_size
+    except OSError as exc:
+        return b"", f"stat 失败: {exc}"
+    if size <= 0:
+        return b"", "空文件"
+    if size > DLL_SAMPLE_LIMIT_BYTES:
+        return b"", f"文件过大（{size} 字节），跳过导出解析"
+    try:
+        return path.read_bytes(), "ok"
+    except OSError as exc:
+        return b"", f"读取失败: {exc}"
+
+
+def _minimal_pe_exports(data: bytes) -> tuple[bool, list[str]]:
+    """内置最小 PE 导出表解析（static.pe 不可用/异常时的兜底），绝不抛异常。"""
+    try:
+        if len(data) < 0x40 or data[:2] != b"MZ":
+            return False, []
+        e_lfanew = int.from_bytes(data[0x3C:0x40], "little")
+        if e_lfanew <= 0 or e_lfanew + 24 > len(data):
+            return False, []
+        if data[e_lfanew : e_lfanew + 4] != b"PE\x00\x00":
+            return False, []
+        coff = e_lfanew + 4
+        num_sections = int.from_bytes(data[coff + 2 : coff + 4], "little")
+        size_optional = int.from_bytes(data[coff + 16 : coff + 18], "little")
+        characteristics = int.from_bytes(data[coff + 18 : coff + 20], "little")
+        is_dll = bool(characteristics & IMAGE_FILE_DLL)
+        optional = coff + 20
+        if size_optional < 96 or optional + size_optional > len(data):
+            return is_dll, []
+        magic = int.from_bytes(data[optional : optional + 2], "little")
+        if magic not in (0x10B, 0x20B):
+            return is_dll, []
+        is_plus = magic == 0x20B
+        dirs_count = int.from_bytes(data[optional + (108 if is_plus else 92) : optional + (112 if is_plus else 96)], "little")
+        dirs_offset = optional + (112 if is_plus else 96)
+        if dirs_count < 1 or dirs_offset + 8 > len(data):
+            return is_dll, []
+        export_rva = int.from_bytes(data[dirs_offset : dirs_offset + 4], "little")
+        if not export_rva:
+            return is_dll, []
+        section_table = optional + size_optional
+
+        def rva_to_offset(rva: int) -> int:
+            for index in range(min(num_sections, 96)):
+                base = section_table + index * 40
+                if base + 40 > len(data):
+                    return 0
+                virtual_size = int.from_bytes(data[base + 8 : base + 12], "little")
+                virtual_addr = int.from_bytes(data[base + 12 : base + 16], "little")
+                raw_size = int.from_bytes(data[base + 16 : base + 20], "little")
+                pointer_raw = int.from_bytes(data[base + 20 : base + 24], "little")
+                span = max(virtual_size, raw_size)
+                if virtual_addr <= rva < virtual_addr + span:
+                    delta = rva - virtual_addr
+                    if delta < raw_size and pointer_raw + delta < len(data):
+                        return pointer_raw + delta
+                    return 0
+            return 0
+
+        export_offset = rva_to_offset(export_rva)
+        if not export_offset or export_offset + 40 > len(data):
+            return is_dll, []
+        num_names = int.from_bytes(data[export_offset + 24 : export_offset + 28], "little")
+        names_rva = int.from_bytes(data[export_offset + 32 : export_offset + 36], "little")
+        names_offset = rva_to_offset(names_rva)
+        if not names_offset:
+            return is_dll, []
+        exports: list[str] = []
+        for index in range(min(num_names, 512)):
+            entry = names_offset + index * 4
+            if entry + 4 > len(data):
+                break
+            name_offset = rva_to_offset(int.from_bytes(data[entry : entry + 4], "little"))
+            if not name_offset or name_offset >= len(data):
+                continue
+            end = data.find(b"\x00", name_offset, min(len(data), name_offset + 256))
+            if end < 0:
+                continue
+            name = data[name_offset:end].decode("ascii", "replace")
+            if name:
+                exports.append(name)
+            if len(exports) >= 64:
+                break
+        return is_dll, exports
+    except (ValueError, IndexError):
+        return False, []
+
+
+def _named_dll_exports(path: Path) -> tuple[list[str], str]:
+    """解析 DLL 的名字导出表（优先 lazy import tianti.static.pe，失败回退最小解析）。
+
+    返回 (导出名列表, 解析来源说明)。列表顺序即 PE 导出名表顺序，调用方取第一个。
+    """
+    data, note = _read_sample_bytes(path)
+    if not data:
+        return [], note
+    try:
+        from ..static import pe as static_pe  # lazy：避免 L1 常态依赖静态层
+    except Exception as exc:  # noqa: BLE001 - 静态层不可用必须降级
+        static_pe = None
+        static_error = f"static.pe 不可用: {exc}"
+    else:
+        static_error = ""
+    if static_pe is not None:
+        try:
+            info = static_pe.parse_pe(data)
+            if info.valid or info.is_dll:
+                return [str(name) for name in (info.exports or [])], "static.pe"
+            static_error = info.error or "static.pe 判定 PE 无效"
+        except Exception as exc:  # noqa: BLE001
+            static_error = f"static.pe 解析异常: {exc}"
+    _is_dll, exports = _minimal_pe_exports(data)
+    return exports, f"内置最小解析（{static_error}）"
+
+
+def _build_dll_command(sample_copy: Path) -> _LaunchSpec:
+    """DLL 动态执行：rundll32 优先，regsvr32 兜底，均不可用则 fail-closed。"""
+    rundll32 = _system32_tool("rundll32.exe")
+    regsvr32 = _system32_tool("regsvr32.exe")
+    exports, parse_note = _named_dll_exports(sample_copy)
+    firewall_note = "按程序防火墙绑定启动器 exe，不绑定 DLL 文件"
+    if exports and rundll32:
+        export = exports[0]
+        return _LaunchSpec(
+            str(rundll32),
+            f'"{rundll32}" "{sample_copy}",{export}',
+            {
+                "launcher": "rundll32",
+                "export": export,
+                "export_count": int(len(exports)),
+                "note": f"取第一个函数名导出（{parse_note}）；{firewall_note}",
+            },
+        )
+    if regsvr32:
+        reason = "无函数名导出" if not exports else "rundll32.exe 不可用"
+        return _LaunchSpec(
+            str(regsvr32),
+            f'"{regsvr32}" /s "{sample_copy}"',
+            {
+                "launcher": "regsvr32",
+                "export": None,
+                "export_count": int(len(exports)),
+                "note": f"{reason}，回退 regsvr32 /s（{parse_note}）；{firewall_note}",
+            },
+        )
+    raise SandboxUnavailable(
+        f"DLL 无法动态执行：rundll32.exe/regsvr32.exe 均不可用（导出解析: {parse_note}）",
+        sample=str(sample_copy),
+        export_count=len(exports),
+    )
+
+
+def _build_command(sample: Sample, sample_copy: Path) -> _LaunchSpec:
+    """返回实际启动方式。DLL 走 rundll32/regsvr32，其余按脚本/PE 直启。"""
     suffix = sample_copy.suffix.lower()
     sample_type = sample.type
+    if suffix == ".dll" or (
+        sample_type in (SampleType.PE32, SampleType.PE64) and _pe_is_dll(sample_copy)
+    ):
+        return _build_dll_command(sample_copy)
     if sample_type in (SampleType.PE32, SampleType.PE64):
-        return str(sample_copy), f'"{sample_copy}"'
+        return _LaunchSpec(str(sample_copy), f'"{sample_copy}"')
     if sample_type is SampleType.SCRIPT_POWERSHELL or suffix in (".ps1", ".psm1"):
         powershell = _powershell_path()
         command = (
             f'"{powershell}" -NoProfile -NonInteractive -ExecutionPolicy Bypass '
             f'-WindowStyle Hidden -File "{sample_copy}"'
         )
-        return powershell, command
+        return _LaunchSpec(powershell, command)
     if sample_type is SampleType.SCRIPT_BATCH or suffix in (".bat", ".cmd"):
         cmd = _cmd_path()
-        return cmd, f'"{cmd}" /c "{sample_copy}"'
+        return _LaunchSpec(cmd, f'"{cmd}" /c "{sample_copy}"')
     if sample_type is SampleType.SCRIPT_JS or suffix == ".js":
-        cscript = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cscript.exe")
-        return cscript, f'"{cscript}" //nologo //B "{sample_copy}"'
+        cscript = _system32_tool("cscript.exe") or "cscript.exe"
+        return _LaunchSpec(cscript, f'"{cscript}" //nologo //B "{sample_copy}"')
     if sample_type is SampleType.SCRIPT_VBS or suffix == ".vbs":
-        cscript = str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cscript.exe")
-        return cscript, f'"{cscript}" //nologo //B "{sample_copy}"'
+        cscript = _system32_tool("cscript.exe") or "cscript.exe"
+        return _LaunchSpec(cscript, f'"{cscript}" //nologo //B "{sample_copy}"')
     raise SandboxUnavailable(
-        f"containment 不执行该样本类型: {sample_type.value}（仅支持 PE / PowerShell / BAT / JS / VBS）",
+        f"containment 不执行该样本类型: {sample_type.value}（仅支持 PE / DLL / PowerShell / BAT / JS / VBS）",
         sample_type=sample_type.value,
     )
 
@@ -417,7 +624,7 @@ class ContainmentBackend(BaseSandboxBackend):
             return False, "icacls 不可用，无法为工作目录设置低完整性标签"
         return True, (
             "containment：受限令牌 + 低完整性(integrity:low) + Job Object + "
-            "防火墙按程序阻断 + 快照/连接表观测"
+            "防火墙按程序阻断 + 快照/连接表观测 + DLL(rundll32/regsvr32)"
         )
 
     # -- 主流程 -------------------------------------------------------
@@ -474,8 +681,11 @@ class ContainmentBackend(BaseSandboxBackend):
 
         program = ""
         command_line = ""
+        launch_spec: _LaunchSpec | None = None
         try:
-            program, command_line = _build_command(sample, sample_copy)
+            launch_spec = _build_command(sample, sample_copy)
+            program = launch_spec.program
+            command_line = launch_spec.command_line
             iso.prepare(program)  # 防火墙失败 -> SandboxError（fail-closed）
             if "integrity:low" in iso.items:
                 # 低完整性进程只能写低完整性位置：必须给工作目录 + 样本打标签
@@ -819,6 +1029,7 @@ class ContainmentBackend(BaseSandboxBackend):
                     "restricted_token": bool(launch is not None and launch.restricted_token),
                     "integrity_low": bool(launch is not None and launch.low_integrity),
                 },
+                "dll_loader": launch_spec.dll_loader if launch_spec is not None else None,
                 "isolation": iso.report(),
                 "job_object": {
                     "ok": bool(job is not None and job.configured),

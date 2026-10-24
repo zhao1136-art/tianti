@@ -7,6 +7,7 @@ import io
 import json
 import shutil
 import threading
+import zipfile
 import time
 import unittest
 import urllib.error
@@ -31,6 +32,13 @@ def run_cli(argv: list[str]) -> tuple[int, str, str]:
     with redirect_stdout(out), redirect_stderr(err):
         code = main(argv)
     return code, out.getvalue(), err.getvalue()
+
+
+def make_zip(path: Path, entries: dict[str, bytes]) -> Path:
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    return path
 
 
 class CliReplayTests(unittest.TestCase):
@@ -84,6 +92,40 @@ class CliReplayTests(unittest.TestCase):
             self.assertNotIn("<script", text)
             self.assertNotIn("http://", text)
             self.assertIn(str(html_path), out)
+
+    def test_scan_zip_expands_entries(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zip_path = make_zip(root / "sample.zip", {"readme.txt": b"hello", "inner.bin": b"data"})
+            out_dir = root / "out"
+            code, out, err = run_cli(["scan", str(zip_path), "--out", str(out_dir), "--format", "json"])
+            self.assertEqual(code, 0, err)
+            results = list(out_dir.glob("*.result.json"))
+            self.assertEqual(len(results), 1)
+            payload = json.loads(results[0].read_text(encoding="utf-8"))
+            archive = payload["extra"]["archive"]
+            self.assertTrue(archive["expanded"])
+            self.assertEqual(archive["count"], 2)
+            self.assertEqual(payload["events"], [])
+            self.assertEqual(payload["sample"]["type"], "archive/zip")
+            self.assertTrue(any("压缩包" in note for note in payload["notes"]))
+
+    def test_scan_zip_no_archive_expand(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            zip_path = make_zip(root / "sample.zip", {"readme.txt": b"hello"})
+            out_dir = root / "out"
+            code, out, err = run_cli(
+                ["scan", str(zip_path), "--out", str(out_dir), "--format", "json", "--no-archive-expand"]
+            )
+            self.assertEqual(code, 0, err)
+            results = list(out_dir.glob("*.result.json"))
+            self.assertEqual(len(results), 1)
+            payload = json.loads(results[0].read_text(encoding="utf-8"))
+            archive = payload["extra"]["archive"]
+            self.assertFalse(archive["expanded"])
+            self.assertEqual(archive["entries"], [])
+            self.assertTrue(any("--no-archive-expand" in note for note in payload["notes"]))
 
     def test_convert_cape_to_trace_and_replay(self):
         from tests.unit.test_report2trace import build_cape_report

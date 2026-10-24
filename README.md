@@ -69,7 +69,8 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 
 ## 当前能力
 
-- 静态预筛：PE32/PE64 结构、节区熵、导入/导出、签名目录存在性、overlay、加壳启发；脚本/归档特征；EICAR 识别（不执行）。
+- 静态预筛：PE32/PE64 结构、节区熵、导入/导出、签名目录存在性、overlay、加壳启发；脚本/归档特征；**Office 宏提取**（OOXML/OLE、CFB 解析、宏/自动执行/可疑 API 信号）；EICAR 识别（不执行）。
+- 压缩包：zip 安全展开、逐条目静态分析、聚合判定（CLI/GUI/HTML 展示条目表，有 100 条/64MB 上限）。
 - 沙箱：containment 后端（受限令牌 + 低完整性 + Job Object + 按程序防火墙 + 超时硬杀 + 进程树清理），事件覆盖 process/file/network/registry；replay 后端用于 CI 与离线分析。
 - capa 兼容规则引擎：and/or/not/optional/count/match（DAG）、5 种 scope、54 条自研规则 + 可选 625 条官方上游规则（`--include-upstream`）。
 - 危险行为检测：26 条 YAML 检测器（时序 + 聚合 + 序列），覆盖 10 个 ATT&CK 战术。
@@ -112,6 +113,12 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 
 性能差距说明：rules 10k 的 591ms 主要花在 string 特征的线性正则扫描（正则无法倒排）；
 detect 已从 9.5s/1k 优化到 142ms/1k（窗口剪枝 + 编译期 hints + 加载缓存）。
+
+## 实验代码（未接入）
+
+- **DLL 动态加载**：`tianti/sandbox/containment.py` 里有 rundll32/regsvr32 启动分支与单测，但
+  **不接入 pipeline/CLI/GUI**（`dynamically_executable` 明确把 DLL 排除）。原因：rundll32 用任意导出调用 DLL 会崩溃，
+  实测伴随 explorer 崩溃循环；保留代码供后续用专门 loader 进程替代时参考。
 
 ## 技术债
 
