@@ -1,5 +1,6 @@
-# Tk 桌面前端（tianti gui）
+# 御天分析（Tk 桌面前端，命令 `tianti gui`）
 
+「御天分析」是引擎的桌面前端（内核仍为 TianTi，命令行入口 `tianti gui`）。
 纯标准库 tkinter/ttk 实现，复用 L5 pipeline（扫描 / 回放 / 规则 / 检测 / 评分 / 报告），
 不在 UI 里重复分析逻辑。零第三方依赖。
 

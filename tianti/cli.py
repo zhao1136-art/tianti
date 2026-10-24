@@ -576,7 +576,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_convert.add_argument("--out", default=None, help="输出 trace JSON（默认 out/<report>.trace.json）")
     p_convert.set_defaults(func=cmd_convert_cape)
 
-    p_gui = sub.add_parser("gui", help="启动 Tk 桌面前端")
+    p_gui = sub.add_parser("gui", help="启动御天分析（Tk 桌面前端）")
     p_gui.add_argument("--path", default=None, help="启动时填入的样本/轨迹路径")
     p_gui.add_argument("--demo", action="store_true", help="加载 golden trace 演示数据")
     p_gui.add_argument("--trace", default=None, help="配合 --demo 指定 trace 文件")

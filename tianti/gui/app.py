@@ -33,7 +33,9 @@ from ..trace import schema
 from . import format as fmt
 
 MAX_DIR_FILES = 100
-TITLE = "天体引擎 TianTi — 沙箱行为分析"
+APP_NAME = "御天分析"
+APP_SUBTITLE = "沙箱执行 · capa 规则 · 危险行为检测"
+TITLE = f"{APP_NAME} — 沙箱行为分析"
 
 
 class _Cancelled(Exception):
@@ -126,16 +128,16 @@ class TiantiApp:
         header.pack(fill="x")
         header.pack_propagate(False)
         tk.Label(
-            header, text="天体引擎 TianTi", bg=COLORS["header"], fg="white",
+            header, text=APP_NAME, bg=COLORS["header"], fg="white",
             font=("Microsoft YaHei UI", 16, "bold"),
         ).pack(side="left", padx=16, pady=10)
         tk.Label(
             header,
-            text="沙箱执行 + capa 规则能力识别 + 危险行为检测",
+            text=APP_SUBTITLE,
             bg=COLORS["header"], fg="#c9d6e8", font=("Microsoft YaHei UI", 9),
         ).pack(side="left", pady=18)
         tk.Label(
-            header, text=f"v{__version__}   schema: tianti.trace/1",
+            header, text=f"v{__version__}   引擎 TianTi   schema: tianti.trace/1",
             bg=COLORS["header"], fg="#c9d6e8", font=("Microsoft YaHei UI", 9),
         ).pack(side="right", padx=16)
 
@@ -747,9 +749,10 @@ class TiantiApp:
 
     def show_about(self) -> None:
         messagebox.showinfo(
-            "关于天体引擎",
-            "天体引擎 TianTi\n"
-            "沙箱 + capa 规则能力识别 + 危险行为检测\n\n"
+            f"关于{APP_NAME}",
+            f"{APP_NAME}（Yutian Analysis）\n"
+            "沙箱 + capa 规则能力识别 + 危险行为检测\n"
+            f"引擎内核：TianTi v{__version__}\n\n"
             "· 自动模式：trace JSON 离线回放；其他文件走 containment 沙箱\n"
             "· 离线回放不会执行样本，适合反复调规则\n"
             "· 沙箱执行受本机火绒 HIPS 监控可能弹窗（受限令牌/低完整性/断网）\n\n"
@@ -820,7 +823,7 @@ def _safe_stem(name: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="tianti gui", description="天体引擎 Tk 桌面前端")
+    parser = argparse.ArgumentParser(prog="tianti gui", description="御天分析（Tk 桌面前端）")
     parser.add_argument("--path", default=None, help="启动时填入的样本/轨迹路径")
     parser.add_argument("--demo", action="store_true", help="加载 golden trace 演示数据")
     parser.add_argument("--trace", default=None, help="配合 --demo 指定 trace 文件")
