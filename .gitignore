@@ -22,3 +22,9 @@ docs/gui_probe.*
 build/
 dist/
 *.spec
+
+# ETW probing scratch files (written to repo root when debugging providers).
+# These are experiments, not deliverables -- keep them out of commits.
+out_*.wprp
+out_*providers*.txt
+out_*.etl
