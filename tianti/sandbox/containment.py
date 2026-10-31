@@ -655,6 +655,9 @@ class ContainmentBackend(BaseSandboxBackend):
         work_root = Path(policy.workdir_root).resolve() if policy.workdir_root else Config.default().paths.work
         work = work_root / trace_id / "c"
         work.mkdir(parents=True, exist_ok=True)
+        # 放在 work 内部，确保 snapshot_tree(work) 能看到样本写出的临时文件
+        temp_dir = work / "_tmp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
         source = Path(sample.path).resolve()
         sample_copy = work / source.name
         shutil.copy2(source, sample_copy)
@@ -703,10 +706,12 @@ class ContainmentBackend(BaseSandboxBackend):
                         reason="workdir_integrity_failed",
                     )
                 file_ok, file_detail = _set_tree_low_integrity(sample_copy, recursive=False)
+                temp_ok, temp_detail = _set_tree_low_integrity(temp_dir)
                 workdir_integrity = {
                     "label": "low",
                     "dir": dir_detail,
                     "sample": file_detail if file_ok else f"failed: {file_detail}",
+                    "temp": temp_detail if temp_ok else f"failed: {temp_detail}",
                 }
                 notes.append("低完整性（integrity:low）：写入受限（含系统目录），读/执行不受限")
             job = _JobObject()
@@ -738,7 +743,10 @@ class ContainmentBackend(BaseSandboxBackend):
                     etw_session = None
 
             builder.start()
-            launch = iso.launch(command_line, cwd=str(work))
+            # TEMP/TMP 重定向到 work/_tmp：样本写临时文件也会被快照观测到
+            launch_env = {"TEMP": str(temp_dir), "TMP": str(temp_dir)}
+            launch = iso.launch(command_line, cwd=str(work), env=launch_env)
+            notes.append("TEMP/TMP 已重定向到 work/_tmp（样本写临时文件可被快照观测）")
             launch_utc = datetime.now(timezone.utc)
             root_pid = launch.pid
             if job is not None and job.handle:
@@ -1039,6 +1047,7 @@ class ContainmentBackend(BaseSandboxBackend):
         extra.update(
             {
                 "workdir": str(work),
+                "env": {"TEMP": str(temp_dir), "TMP": str(temp_dir)},
                 "workdir_cleaned": False,
                 # 根进程启动信息：供 detect 区分 harness 包装命令行与样本自身行为
                 "launch": {

@@ -161,6 +161,16 @@ def is_admin() -> bool:
         return False
 
 
+def _environment_block(overrides: dict[str, str] | None) -> Any:
+    """构造 CreateProcess 用的 UTF-16 环境块（用于 TEMP/TMP 重定向）。"""
+    env = dict(os.environ)
+    if overrides:
+        env.update({str(key): str(value) for key, value in overrides.items()})
+    env.pop("=", None)  # 去掉驱动器的当前目录变量
+    entries = [f"{key}={value}" for key, value in env.items() if key]
+    return ctypes.create_unicode_buffer("\0".join(entries) + "\0\0")
+
+
 def _handle_value(handle: Any) -> int:
     if handle is None:
         return 0
@@ -410,7 +420,7 @@ class Isolation:
         return errors
 
     # -- 启动进程 -----------------------------------------------------
-    def launch(self, command_line: str, cwd: str) -> LaunchResult:
+    def launch(self, command_line: str, cwd: str, env: dict[str, str] | None = None) -> LaunchResult:
         if not self._prepared:
             raise SandboxError("Isolation.prepare() 必须先于 launch() 调用")
         flags = CREATE_SUSPENDED | CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT | CREATE_BREAKAWAY_FROM_JOB
@@ -418,6 +428,8 @@ class Isolation:
         si.cb = ctypes.sizeof(STARTUPINFOW)
         si.dwFlags = 0x00000001  # STARTF_USESHOWWINDOW
         si.wShowWindow = 0  # SW_HIDE
+        env_buf = _environment_block(env) if env else None
+        env_ptr = ctypes.cast(env_buf, ctypes.c_void_p) if env_buf is not None else None
 
         restricted = self._token is not None
         last_error = 0
@@ -437,7 +449,7 @@ class Isolation:
                         None,
                         False,
                         current_flags,
-                        None,
+                        env_ptr,
                         cwd,
                         ctypes.byref(si),
                         ctypes.byref(pi),
@@ -452,7 +464,7 @@ class Isolation:
                         None,
                         False,
                         current_flags,
-                        None,
+                        env_ptr,
                         cwd,
                         ctypes.byref(si),
                         ctypes.byref(pi),
@@ -485,7 +497,7 @@ class Isolation:
                         None,
                         False,
                         current_flags,
-                        None,
+                        env_ptr,
                         cwd,
                         ctypes.byref(si),
                         ctypes.byref(pi),

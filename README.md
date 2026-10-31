@@ -93,6 +93,13 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 
 沙箱执行类型与 containment 启动器能力一致：遇到不能执行的文件不会尝试启动，而是自动回落到静态分析并在结果 notes 中标明。
 
+## 观测与噪声过滤
+
+- 沙箱子进程的 `TEMP`/`TMP` 重定向到 `work/<trace>/c/_tmp`，样本写临时文件也能产出 `file:create/write` 事件；
+- 快照 diff 会产出 file/registry 事件（created→create/write，modified→write，deleted→delete）；
+- capa 命中若证据全部来自沙箱根进程启动事件（harness 命令行），会被过滤并记入备注，避免良性虚高；
+- 仍无法观测：被低完整性/防火墙**拒绝**的写/外联尝试（需 ETW，默认关闭）。
+
 ## 沙箱扫描优化
 
 - **轨迹缓存**：相同样本 sha256 + 策略命中上次沙箱轨迹，直接回放分析，不重复执行（默认开启，`--no-cache` 关闭）；

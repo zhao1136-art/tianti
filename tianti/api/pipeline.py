@@ -176,6 +176,43 @@ def _reason_text(reasons: list[str]) -> str:
 
 
 # --------------------------------------------------------------------- 规则 / 检测器
+
+def _root_launch_event_ids(trace: Trace) -> set[str]:
+    """根进程启动事件 id（沙箱 harness 包装命令行只产生这一条事件）。"""
+    launch = dict((trace.extra or {}).get("launch") or {})
+    pid = launch.get("pid")
+    if not launch or pid is None:
+        return set()
+    command_line = str(launch.get("command_line") or "")
+    ids: set[str] = set()
+    for event in trace.events:
+        if event.category != "process" or event.action != "create":
+            continue
+        if pid is not None and event.pid != int(pid):
+            continue
+        event_cmd = str(event.args.get("command_line") or "")
+        if command_line and event_cmd and event_cmd != command_line:
+            continue
+        ids.add(event.id)
+    return ids
+
+
+def _filter_harness_matches(trace: Trace, matches: list[RuleMatch]) -> tuple[list[RuleMatch], int]:
+    """过滤“证据全部来自根进程启动事件”的能力命中（capa 规则不应把 harness 参数当样本行为）。"""
+    root_ids = _root_launch_event_ids(trace)
+    if not root_ids:
+        return list(matches), 0
+    kept: list[RuleMatch] = []
+    dropped = 0
+    for match in matches:
+        evidence = {str(eid) for ids in (match.evidence or {}).values() for eid in ids}
+        if evidence and evidence <= root_ids:
+            dropped += 1
+            continue
+        kept.append(match)
+    return kept, dropped
+
+
 def run_rules(
     trace: Trace,
     *,
@@ -208,7 +245,12 @@ def run_rules(
         )
     except Exception as exc:
         return [], f"规则匹配异常（{module_name}）: {exc}"
-    return _to_rule_matches(raw), note
+    matches = _to_rule_matches(raw)
+    matches, dropped = _filter_harness_matches(trace, matches)
+    if dropped:
+        harness_note = f"已过滤 {dropped} 条由沙箱启动命令行触发的能力命中（harness 噪声）"
+        note = f"{note}；{harness_note}" if note else harness_note
+    return matches, note
 
 
 def run_detectors(trace: Trace, *, config: Config | None = None) -> tuple[list[DetectorHit], str | None]:

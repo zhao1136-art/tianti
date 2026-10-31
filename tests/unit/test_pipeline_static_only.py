@@ -128,3 +128,72 @@ class TraceCacheTests(unittest.TestCase):
         args = parser.parse_args(["scan", "x.bin", "--static-only", "--no-cache"])
         self.assertTrue(args.static_only)
         self.assertTrue(args.no_cache)
+
+
+class HarnessFilterTests(unittest.TestCase):
+    def _trace(self):
+        from tianti.core.model import Sample
+        from tianti.trace.normalize import EventBuilder, build_trace
+        from tianti.trace.schema import SandboxInfo
+
+        builder = EventBuilder(max_events=10, source="test").start()
+        root = builder.emit(
+            "process", "create", pid=100, image="powershell.exe",
+            target="powershell.exe",
+            args={"command_line": 'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "x.ps1"'},
+            source="test", confidence="high",
+        )
+        child = builder.emit(
+            "process", "create", pid=200, ppid=100, image="cmd.exe", target="cmd.exe",
+            args={"command_line": "cmd.exe /c whoami"}, source="test", confidence="high",
+        )
+        sample = Sample.from_bytes(b"probe", "probe.ps1")
+        trace = build_trace(
+            sample=sample,
+            engine_version="0.0-test",
+            backend="containment",
+            policy="deep",
+            sandbox=SandboxInfo(host="test", terminated_by="exited"),
+            builder=builder,
+            extra={
+                "launch": {
+                    "pid": 100,
+                    "command_line": 'powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -File "x.ps1"',
+                }
+            },
+        )
+        return trace, root.id, child.id
+
+    def test_harness_only_match_dropped(self) -> None:
+        from tianti.api.pipeline import _filter_harness_matches
+        from tianti.rules.base import RuleMatch
+
+        trace, root_id, child_id = self._trace()
+        harness_match = RuleMatch(name="绕过执行策略", evidence={"string: /ExecutionPolicy Bypass/": [root_id]})
+        real_match = RuleMatch(name="创建子进程", evidence={"process: cmd.exe": [child_id]})
+        mixed_match = RuleMatch(name="混合证据", evidence={"a": [root_id], "b": [child_id]})
+        kept, dropped = _filter_harness_matches(trace, [harness_match, real_match, mixed_match])
+        self.assertEqual(dropped, 1)
+        self.assertEqual([m.name for m in kept], ["创建子进程", "混合证据"])
+
+    def test_no_launch_info_keeps_all(self) -> None:
+        from tianti.api.pipeline import _filter_harness_matches
+        from tianti.core.model import Sample
+        from tianti.rules.base import RuleMatch
+        from tianti.trace.normalize import EventBuilder, build_trace
+        from tianti.trace.schema import SandboxInfo
+
+        builder = EventBuilder(max_events=5, source="test").start()
+        event = builder.emit("process", "create", pid=1, image="x.exe", source="test", confidence="high")
+        trace = build_trace(
+            sample=Sample.from_bytes(b"x", "x.exe"),
+            engine_version="0.0-test",
+            backend="replay",
+            policy="deep",
+            sandbox=SandboxInfo(host="test", terminated_by="exited"),
+            builder=builder,
+        )
+        match = RuleMatch(name="x", evidence={"k": [event.id]})
+        kept, dropped = _filter_harness_matches(trace, [match])
+        self.assertEqual(dropped, 0)
+        self.assertEqual(len(kept), 1)

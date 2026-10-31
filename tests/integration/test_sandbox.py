@@ -356,3 +356,39 @@ class EtwTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TempRedirectTests(unittest.TestCase):
+    """TEMP/TMP 重定向到 work/_tmp 后，样本写临时文件应产生 file 事件。"""
+
+    def test_temp_redirect_produces_file_events(self) -> None:
+        import os
+        import tempfile
+
+        from tianti.core.config import Config
+        from tianti.core.model import Sample
+        from tianti.sandbox.base import SandboxPolicy
+        from tianti.sandbox.containment import ContainmentBackend
+
+        root = Path(tempfile.mkdtemp(prefix="tianti_temp_redirect_"))
+        sample_path = root / "probe.ps1"
+        sample_path.write_text(
+            'Set-Content -Path "$env:TEMP\\\\probe_tmp.txt" -Value "hello-temp"\n'
+            'Set-Content -Path ".\\\\probe_cwd.txt" -Value "hello-cwd"\n',
+            encoding="utf-8",
+        )
+        try:
+            policy = SandboxPolicy.from_config(Config.load().policy("deep"), workdir_root=root / "work")
+            trace = ContainmentBackend().run(Sample.from_path(sample_path), policy)
+        finally:
+            import shutil
+
+            shutil.rmtree(root, ignore_errors=True)
+
+        env = dict((trace.extra or {}).get("env") or {})
+        self.assertIn("_tmp", str(env.get("TEMP", "")), "TEMP 应被重定向到 work/_tmp")
+        file_events = [e for e in trace.events if e.category == "file"]
+        targets = [str(e.target or "") for e in file_events]
+        self.assertTrue(any("_tmp" in t and "probe_tmp.txt" in t for t in targets), targets)
+        self.assertTrue(any("probe_cwd.txt" in t for t in targets), targets)
+        self.assertGreaterEqual(trace.summary.file_writes, 2)
