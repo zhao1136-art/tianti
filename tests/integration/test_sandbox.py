@@ -392,3 +392,68 @@ class TempRedirectTests(unittest.TestCase):
         self.assertTrue(any("_tmp" in t and "probe_tmp.txt" in t for t in targets), targets)
         self.assertTrue(any("probe_cwd.txt" in t for t in targets), targets)
         self.assertGreaterEqual(trace.summary.file_writes, 2)
+
+
+class RegistryEtwTests(unittest.TestCase):
+    """低完整性拒绝的注册表写尝试：定向 ETW 要能看到并触发检测器。"""
+
+    def _probe(self) -> tuple["object", "object"]:
+        import tempfile
+        from pathlib import Path
+
+        from tianti.core.config import Config
+        from tianti.core.model import Sample
+        from tianti.sandbox.base import SandboxPolicy
+        from tianti.sandbox.containment import ContainmentBackend
+
+        root = Path(tempfile.mkdtemp(prefix="tianti_reg_etw_"))
+        probe = root / "regprobe.ps1"
+        probe.write_text(
+            '$ErrorActionPreference = "Continue"\n'
+            'try { Set-ItemProperty -Path "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run" '
+            '-Name "TianTiEtwProbe" -Value "calc.exe" -ErrorAction Stop } catch {}\n',
+            encoding="utf-8",
+        )
+        policy = SandboxPolicy.from_config(Config.load().policy("deep"), workdir_root=root / "work")
+        trace = ContainmentBackend(registry_etw=True).run(Sample.from_path(probe), policy)
+        return trace, root
+
+    def test_denied_run_key_attempt_observed(self) -> None:
+        import shutil
+
+        from tianti.api import pipeline
+        from tianti.core.config import Config
+
+        trace, root = self._probe()
+        try:
+            registry_events = [e for e in trace.events if e.category == "registry"]
+            self.assertTrue(registry_events, "定向 ETW 应产出 registry 事件")
+            run_events = [e for e in registry_events if "CurrentVersion\\Run" in str(e.target)]
+            self.assertTrue(run_events, [str(e.target) for e in registry_events])
+            self.assertTrue(any(bool(e.args.get("denied")) for e in run_events))
+            hits, note = pipeline.run_detectors(trace, config=Config.load())
+            self.assertIsNone(note)
+            self.assertTrue(any(hit.name == "Run/RunOnce 自启动" for hit in hits), [h.name for h in hits])
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+
+    def test_registry_etw_can_be_disabled(self) -> None:
+        import shutil
+        import tempfile
+        from pathlib import Path
+
+        from tianti.core.config import Config
+        from tianti.core.model import Sample
+        from tianti.sandbox.base import SandboxPolicy
+        from tianti.sandbox.containment import ContainmentBackend
+
+        root = Path(tempfile.mkdtemp(prefix="tianti_reg_etw_off_"))
+        probe = root / "regprobe.ps1"
+        probe.write_text("Write-Output hi\n", encoding="utf-8")
+        try:
+            policy = SandboxPolicy.from_config(Config.load().policy("deep"), workdir_root=root / "work")
+            trace = ContainmentBackend(registry_etw=False).run(Sample.from_path(probe), policy)
+            self.assertFalse([e for e in trace.events if e.category == "registry"])
+            self.assertNotIn("etw_registry", trace.extra or {})
+        finally:
+            shutil.rmtree(root, ignore_errors=True)

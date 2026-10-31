@@ -27,6 +27,7 @@ class SandboxPolicy:
     workdir_root: Path | None = None
     follow_children: bool = True
     registry_snapshot: bool = True
+    registry_etw: bool | None = None
 
     @classmethod
     def from_config(cls, policy: PolicyConfig, *, workdir_root: str | Path | None = None) -> "SandboxPolicy":
@@ -41,6 +42,7 @@ class SandboxPolicy:
             workdir_root=Path(workdir_root) if workdir_root is not None else None,
             follow_children=policy.follow_children,
             registry_snapshot=policy.registry_snapshot,
+            registry_etw=policy.registry_etw,
         )
 
     def limits(self) -> SandboxLimits:

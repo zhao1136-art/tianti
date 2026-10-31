@@ -73,6 +73,7 @@ class PolicyConfig:
     backend: str = "containment"
     follow_children: bool = True
     registry_snapshot: bool = True
+    registry_etw: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -85,6 +86,7 @@ class PolicyConfig:
             "backend": self.backend,
             "follow_children": self.follow_children,
             "registry_snapshot": self.registry_snapshot,
+            "registry_etw": self.registry_etw,
         }
 
     @classmethod
@@ -102,6 +104,7 @@ class PolicyConfig:
             backend=str(data.get("backend", "containment")),
             follow_children=bool(data.get("follow_children", True)),
             registry_snapshot=bool(data.get("registry_snapshot", True)),
+            registry_etw=(None if data.get("registry_etw") is None else bool(data.get("registry_etw"))),
         )
 
 
@@ -163,6 +166,7 @@ DEFAULT_POLICIES: dict[str, dict[str, Any]] = {
         "max_events": 5000,
         "backend": "replay",
         "registry_snapshot": False,
+        "registry_etw": False,
     },
     "deep": {
         "timeout_s": 20,
@@ -171,6 +175,8 @@ DEFAULT_POLICIES: dict[str, dict[str, Any]] = {
         "network": "blocked",
         "max_events": 20000,
         "backend": "containment",
+        "registry_snapshot": True,
+        "registry_etw": True,
     },
     "paranoid": {
         "timeout_s": 60,
@@ -179,6 +185,8 @@ DEFAULT_POLICIES: dict[str, dict[str, Any]] = {
         "network": "blocked",
         "max_events": 50000,
         "backend": "containment",
+        "registry_snapshot": True,
+        "registry_etw": True,
     },
 }
 

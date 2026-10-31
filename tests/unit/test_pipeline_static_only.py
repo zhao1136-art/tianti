@@ -85,6 +85,9 @@ class StaticOnlyModeTests(unittest.TestCase):
         cfg = Config.default()
         self.assertFalse(cfg.policy("fast").registry_snapshot)
         self.assertTrue(cfg.policy("deep").registry_snapshot)
+        self.assertFalse(cfg.policy("fast").registry_etw)
+        self.assertTrue(cfg.policy("deep").registry_etw)
+        self.assertTrue(cfg.policy("paranoid").registry_etw)
 
 
 class TraceCacheTests(unittest.TestCase):

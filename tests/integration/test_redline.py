@@ -116,6 +116,7 @@ def _run_sim(
         max_events=50000,
         backend="containment",
         workdir_root=workdir,
+        registry_etw=False,  # 红线计时不应包含 ETW 采集/tracerpt 开销
     )
     started = time.monotonic()
     try:

@@ -98,7 +98,9 @@ $PY = "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\pytho
 - 沙箱子进程的 `TEMP`/`TMP` 重定向到 `work/<trace>/c/_tmp`，样本写临时文件也能产出 `file:create/write` 事件；
 - 快照 diff 会产出 file/registry 事件（created→create/write，modified→write，deleted→delete）；
 - capa 命中若证据全部来自沙箱根进程启动事件（harness 命令行），会被过滤并记入备注，避免良性虚高；
-- 仍无法观测：被低完整性/防火墙**拒绝**的写/外联尝试（需 ETW，默认关闭）。
+- **注册表定向 ETW**（默认开）：Kernel-Registry provider 捕获 set/delete/query 与被拒绝的写尝试（`args.denied`），
+  让 Run/Winlogon/Defender/LSASS 等检测器可用；可用 `TIANTI_NO_REGISTRY_ETW=1` 关闭；
+- 仍无法观测：被防火墙**拒绝**的外联尝试（C2）、Startup 目录投放（需文件观测/重定向）。
 
 ## 沙箱扫描优化
 

@@ -51,7 +51,7 @@ from ..core.errors import SampleError, SandboxError, SandboxUnavailable
 from ..core.model import Sample, SampleType
 from ..trace.normalize import EventBuilder, build_trace
 from ..trace.schema import Event, SandboxInfo, new_trace_id
-from . import isolation, netmon, snapshot, telemetry_etw, watchdog
+from . import isolation, netmon, snapshot, telemetry_etw, telemetry_etw_registry, watchdog
 from .base import BaseSandboxBackend, SandboxPolicy
 
 k32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -605,10 +605,12 @@ class ContainmentBackend(BaseSandboxBackend):
         self,
         *,
         use_etw: bool | None = None,
+        registry_etw: bool | None = None,
         cleanup_workdir: bool = True,
         keep_workdir: bool = False,
     ) -> None:
         self.use_etw = bool(use_etw)
+        self.registry_etw = registry_etw  # None = 读 config/engine.json 的 sandbox.registry_etw
         self.cleanup_workdir = bool(cleanup_workdir)
         self.keep_workdir = bool(keep_workdir)
 
@@ -671,6 +673,8 @@ class ContainmentBackend(BaseSandboxBackend):
         job: _JobObject | None = None
         launch: isolation.LaunchResult | None = None
         etw_session: telemetry_etw.EtwSession | None = None
+        reg_etw: telemetry_etw_registry.RegistryEtwSession | None = None
+        reg_etw_emitted = 0
         started_at = _iso_now()
         terminated_by = "error"
         exit_code: int | None = None
@@ -741,6 +745,30 @@ class ContainmentBackend(BaseSandboxBackend):
                 except Exception as exc:
                     extra["etw"] = {"enabled": True, "ok": False, "error": str(exc)[:400]}
                     etw_session = None
+
+            enable_registry_etw = self.registry_etw
+            if enable_registry_etw is None:
+                # 按策略：fast 默认关闭，deep/paranoid 默认开启
+                enable_registry_etw = policy.registry_etw
+            if enable_registry_etw is None:
+                try:
+                    enable_registry_etw = bool(
+                        (Config.load().extra.get("sandbox") or {}).get("registry_etw", True)
+                    )
+                except Exception:  # noqa: BLE001
+                    enable_registry_etw = True
+            if os.environ.get("TIANTI_NO_REGISTRY_ETW") == "1":
+                enable_registry_etw = False
+            if enable_registry_etw:
+                try:
+                    reg_etw = telemetry_etw_registry.RegistryEtwSession(
+                        work_root / trace_id, session_suffix=trace_id
+                    )
+                    reg_etw.start()
+                except Exception as exc:  # noqa: BLE001 - ETW 不可用不致命
+                    extra["etw_registry"] = {"enabled": True, "ok": False, "error": str(exc)[:300]}
+                    notes.append(f"注册表 ETW 不可用（回退快照 diff）: {exc}")
+                    reg_etw = None
 
             builder.start()
             # TEMP/TMP 重定向到 work/_tmp：样本写临时文件也会被快照观测到
@@ -920,6 +948,41 @@ class ContainmentBackend(BaseSandboxBackend):
                 iso_cleanup = {"rules_removed": [], "errors": [str(exc)]}
                 notes.append(f"防火墙清理失败: {exc}")
             extra["isolation_cleanup"] = iso_cleanup
+            # 4.1) 定向注册表 ETW：拿到 set/delete（含被拒绝的写尝试）
+            if reg_etw is not None:
+                try:
+                    allowed: set[int] = set()
+                    if root_pid:
+                        allowed.add(int(root_pid))
+                    if tracker is not None:
+                        allowed.update(int(pid) for pid in tracker.tracked.keys())
+                    reg_events, reg_meta = reg_etw.stop(
+                        t0=launch_utc, allowed_pids=allowed or None
+                    )
+                    for item in reg_events:
+                        builder.emit(
+                            item.category,
+                            item.action,
+                            ts=item.ts,
+                            pid=item.pid,
+                            tid=item.tid,
+                            target=item.target,
+                            args=dict(item.args),
+                            source=item.source,
+                            confidence=item.confidence,
+                        )
+                    reg_etw_emitted = len(reg_events)
+                    extra["etw_registry"] = {"enabled": True, **reg_meta}
+                    if reg_events:
+                        notes.append(
+                            f"注册表 ETW：{len(reg_events)} 条 set/delete"
+                            f"（被拒绝 {int(reg_meta.get('denied') or 0)} 条）"
+                        )
+                    else:
+                        notes.append("注册表 ETW 已启用，但未捕获样本注册表写事件")
+                except BaseException as exc:  # noqa: BLE001
+                    extra["etw_registry"] = {"enabled": True, "ok": False, "error": str(exc)[:300]}
+                    notes.append(f"注册表 ETW 解析失败: {exc}")
             # 5) 文件/注册表快照 diff（只在执行过的情况下）
             if launch is not None:
                 try:
@@ -1004,7 +1067,8 @@ class ContainmentBackend(BaseSandboxBackend):
         except Exception as exc:  # noqa: BLE001
             notes.append(f"注册表 diff 失败: {exc}")
             reg_changes = []
-        for change in reg_changes:
+        reg_etw_used = reg_etw_emitted > 0
+        for change in reg_changes if not reg_etw_used else []:
             action = {"created": "create", "modified": "set", "deleted": "delete"}[change.change]
             args: dict[str, Any] = {"name": change.name, "raw": change.data}
             if change.old_data:
