@@ -22,7 +22,7 @@ def _minimal_pe64() -> bytes:
 
 class StaticOnlyScanTests(unittest.TestCase):
     def test_text_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "readme.txt"
             path.write_text("hello yutian analysis", encoding="utf-8")
             result = pipeline.scan_path(path)
@@ -34,7 +34,7 @@ class StaticOnlyScanTests(unittest.TestCase):
         self.assertTrue(any("静态分析" in note for note in result.notes))
 
     def test_zip_file(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "sample.zip"
             with zipfile.ZipFile(path, "w") as handle:
                 handle.writestr("readme.txt", "hello")
@@ -44,7 +44,7 @@ class StaticOnlyScanTests(unittest.TestCase):
         self.assertEqual(result.events, [])
 
     def test_dll_is_static_only(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "library.dll"
             path.write_bytes(_minimal_pe64())
             result = pipeline.scan_path(path)
@@ -71,7 +71,7 @@ class StaticOnlyScanTests(unittest.TestCase):
 
 class StaticOnlyModeTests(unittest.TestCase):
     def test_static_only_skips_sandbox(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "demo.exe"
             path.write_bytes(_minimal_pe64())
             result = pipeline.scan_path(path, static_only=True)
@@ -94,7 +94,7 @@ class TraceCacheTests(unittest.TestCase):
         from tianti.trace.normalize import EventBuilder, build_trace
         from tianti.trace.schema import SandboxInfo
 
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             cfg = Config.default()
             cfg.paths = PathsConfig.from_root(root)

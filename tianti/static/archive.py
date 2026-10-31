@@ -106,7 +106,13 @@ def _empty_result(fmt: str, error: str) -> dict[str, Any]:
         "truncated": False,
         "embedded_executables": [],
         "embedded_scripts": [],
-        "signals": [signal("archive.malformed", "medium", f"压缩包解析失败：{error}")],
+        "signals": [
+            signal(
+                "archive.malformed",
+                "medium",
+                f"压缩包不是有效格式（{error}），已回退为原始数据静态分析（字符串/熵/内嵌载荷）",
+            )
+        ],
     }
 
 

@@ -615,16 +615,19 @@ def _extract_zip_entries(zip_path: Path, workdir: Path) -> dict[str, Any]:
         "discovered": 0,
         "truncated": False,
         "expanded_bytes": 0,
+        "malformed": False,
+        "error": "",
     }
     try:
         archive = zipfile.ZipFile(zip_path)
-    except (zipfile.BadZipFile, OSError, ValueError) as exc:
-        result["skipped"].append({"name": zip_path.name, "reason": f"压缩包解析失败: {exc}"})
-        result["truncated"] = True
+        infos = archive.infolist()
+    except Exception as exc:  # 不是 zip / 损坏 / 截断 / 加密头异常 / 实现不支持等
+        result["malformed"] = True
+        result["error"] = f"{type(exc).__name__}: {exc}"
+        result["skipped"].append({"name": zip_path.name, "reason": f"压缩包解析失败: {result['error']}"})
         return result
 
     with archive:
-        infos = archive.infolist()
         expanded = 0
         for infos_index, info in enumerate(infos):
             raw_name = info.filename
@@ -736,7 +739,18 @@ def _build_archive_result(
         "max_depth": MAX_ARCHIVE_DEPTH,
     }
     notes: list[str] = []
-    if expanded and extract_info is not None and expanded_entries is not None:
+    malformed = bool(extract_info.get("malformed")) if isinstance(extract_info, dict) else False
+    error_text = str((extract_info or {}).get("error") or "") if isinstance(extract_info, dict) else ""
+    if malformed:
+        archive_info["expanded"] = False
+        archive_info["malformed"] = True
+        archive_info["error"] = error_text
+        notes.append(
+            f"压缩包解析失败：{error_text or '不是有效 ZIP'}。"
+            "该文件扩展名/类型为 zip，但内容不是有效 ZIP（可能损坏、被截断、加密或改名）；"
+            "已回退为原始数据静态分析（字符串 / 熵 / 内嵌载荷），不展开条目。"
+        )
+    elif expanded and extract_info is not None and expanded_entries is not None:
         entries = [meta for meta, _ in expanded_entries]
         archive_info.update(
             {
@@ -797,7 +811,7 @@ def _build_archive_result(
                 f"{worst_meta.get('verdict', '')}）"
             )
             notes.append("压缩包条目只做静态分析（不执行），避免批量可执行文件动态执行；结论置信度按静态信号加权。")
-        else:
+        elif not malformed:
             notes.append(
                 f"压缩包内共 {archive_info['discovered']} 个文件，安全限制下未静态分析任何条目，"
                 "仅归档级静态信号可用。"

@@ -38,7 +38,7 @@ def make_nested_zip(path: Path) -> bytes:
 
 class ZipExpandTests(unittest.TestCase):
     def _scan(self, entries: dict[str, bytes]) -> tuple[ScanResult, dict]:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             nested = make_nested_zip(root / "nested.zip")
             payload = dict(entries)
@@ -90,7 +90,7 @@ class ZipExpandTests(unittest.TestCase):
         json.dumps(payload, ensure_ascii=False)
 
     def test_path_traversal_is_skipped_and_recorded(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             path = build_zip(
                 root / "evil.zip",
@@ -105,7 +105,7 @@ class ZipExpandTests(unittest.TestCase):
         self.assertEqual([entry["name"] for entry in archive["entries"]], ["safe.txt"])
 
     def test_entry_limit_truncates(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             path = build_zip(root / "many.zip", {f"f{i}.txt": b"x" for i in range(4)})
             with mock.patch.object(pipeline, "MAX_ARCHIVE_ENTRIES", 2):
@@ -116,7 +116,7 @@ class ZipExpandTests(unittest.TestCase):
         self.assertIn("截断", " ".join(result.notes))
 
     def test_total_size_limit_truncates(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             path = build_zip(root / "big.zip", {"a.txt": b"a" * 40, "b.txt": b"b" * 40})
             with mock.patch.object(pipeline, "MAX_ARCHIVE_TOTAL_BYTES", 50):
@@ -127,7 +127,7 @@ class ZipExpandTests(unittest.TestCase):
         self.assertIn("上限", " ".join(result.notes))
 
     def test_single_file_limit_skips(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             path = build_zip(root / "single.zip", {"large.txt": b"a" * 100})
             with mock.patch.object(pipeline, "MAX_ARCHIVE_FILE_BYTES", 10):
@@ -137,7 +137,7 @@ class ZipExpandTests(unittest.TestCase):
         self.assertTrue(any("单文件超过上限" in item["reason"] for item in archive["skipped"]))
 
     def test_rar_is_not_expanded(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "fake.rar"
             path.write_bytes(b"Rar!\x1a\x07\x00fake")
             result = pipeline.scan_path(path)
@@ -148,7 +148,7 @@ class ZipExpandTests(unittest.TestCase):
         self.assertTrue(any("无解压能力" in note for note in result.notes))
 
     def test_expand_can_be_disabled(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = build_zip(Path(tmp) / "sample.zip", {"readme.txt": b"hello"})
             result = pipeline.scan_path(path, expand_archives=False)
         archive = dict(result.extra["archive"])
@@ -169,7 +169,7 @@ class ZipExpandTests(unittest.TestCase):
 class ArchiveFormatTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             path = build_zip(
                 root / "sample.zip",
@@ -206,7 +206,7 @@ class ArchiveFormatTests(unittest.TestCase):
             from tianti.gui.app import _zip_entry_count
         except ImportError:
             self.skipTest("tkinter 不可用")
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             root = Path(tmp)
             path = build_zip(root / "count.zip", {"a.txt": b"a", "b.txt": b"b"})
             with zipfile.ZipFile(path, "a") as archive:
@@ -221,7 +221,7 @@ if __name__ == "__main__":
 
 class OfficeContainerRoutingTests(unittest.TestCase):
     def test_office_container_is_not_expanded_as_archive(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             path = Path(tmp) / "demo.docm"
             with zipfile.ZipFile(path, "w") as archive:
                 archive.writestr("word/vbaProject.bin", b"VBA" + b"\x00" * 64)
@@ -232,3 +232,47 @@ class OfficeContainerRoutingTests(unittest.TestCase):
         self.assertTrue(office.get("has_macros"))
         self.assertIn("office.macro_present", [item["id"] for item in (result.static.get("signals") or [])])
         self.assertIn(result.verdict_name, ("suspicious", "malicious"))
+
+
+class MalformedZipTests(unittest.TestCase):
+    """损坏/改名/截断的 .zip 不能抛异常，要回退原始数据静态分析。"""
+
+    def _scan_bytes(self, name: str, payload: bytes):
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+            path = Path(tmp) / name
+            path.write_bytes(payload)
+            return pipeline.scan_path(path)
+
+    def test_garbage_zip_falls_back(self) -> None:
+        result = self._scan_bytes("garbage.zip", b"not a zip file at all")
+        archive = dict((result.extra or {}).get("archive") or {})
+        self.assertTrue(archive.get("malformed"))
+        self.assertFalse(archive.get("expanded"))
+        self.assertEqual(result.extra.get("input"), "static-only")
+        ids = {item["id"] for item in (result.static.get("signals") or [])}
+        self.assertIn("archive.malformed", ids)
+        self.assertTrue(any("不是有效 ZIP" in note for note in result.notes))
+
+    def test_truncated_zip_falls_back(self) -> None:
+        import io
+
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("a.txt", "hello" * 100)
+        payload = buffer.getvalue()
+        result = self._scan_bytes("truncated.zip", payload[: len(payload) // 2])
+        archive = dict((result.extra or {}).get("archive") or {})
+        self.assertTrue(archive.get("malformed"))
+        self.assertEqual(result.events, [])
+
+    def test_empty_zip_falls_back(self) -> None:
+        result = self._scan_bytes("empty.zip", b"")
+        archive = dict((result.extra or {}).get("archive") or {})
+        self.assertTrue(archive.get("malformed"))
+        self.assertTrue(any("样本为空" in note or "不是有效 ZIP" in note for note in result.notes))
+
+    def test_embedded_pe_in_fake_zip_detected(self) -> None:
+        payload = b"\x00" * 1024 + minimal_pe64()
+        result = self._scan_bytes("fake.zip", payload)
+        ids = {item["id"] for item in (result.static.get("signals") or [])}
+        self.assertIn("data.embedded_pe", ids)

@@ -295,7 +295,9 @@ def _scan_one(
           f"matches={len(result.matches)} hits={len(result.hits)}")
     archive = (result.extra or {}).get("archive")
     if isinstance(archive, dict):
-        if archive.get("expanded"):
+        if archive.get("malformed"):
+            print(f"  压缩包: 解析失败（{archive.get('error') or '不是有效 ZIP'}），已按原始数据静态分析")
+        elif archive.get("expanded"):
             print(
                 f"  压缩包: 已静态分析 {archive.get('count', 0)}/{archive.get('discovered', 0)} 个条目"
                 + ("（已截断）" if archive.get("truncated") else "")

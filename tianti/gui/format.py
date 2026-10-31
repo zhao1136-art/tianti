@@ -198,6 +198,13 @@ def archive_summary_lines(result: ScanResult, *, limit: int = 50) -> list[str]:
     archive = dict(extra.get("archive") or {})
     if not archive:
         return []
+    if archive.get("malformed"):
+        return [
+            "",
+            f"【压缩包内容】解析失败：{archive.get('error') or '不是有效 ZIP'}",
+            "  该文件扩展名/类型为 zip，但内容不是有效 ZIP（可能损坏、截断、加密或改名）",
+            "  已回退为原始数据静态分析（字符串 / 熵 / 内嵌载荷）",
+        ]
     rows = archive_rows(result)
     discovered = int(archive.get("discovered") or len(rows))
     truncated = bool(archive.get("truncated"))

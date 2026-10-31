@@ -198,6 +198,7 @@ def analyze(sample: Sample | str | Path | bytes | bytearray | memoryview, data: 
             office_name_kind != ""
             and (raw[:4] == b"PK\x03\x04" or raw[:8] == office.CFB_MAGIC)
         )
+        archive_failed = False
         if sample_type in PE_TYPES or is_pe_by_magic:
             try:
                 info = pe.parse_pe(raw, truncated=truncated)
@@ -238,8 +239,14 @@ def analyze(sample: Sample | str | Path | bytes | bytearray | memoryview, data: 
                 archive_result = archive.analyze_archive(raw, name=resolved.name, sample_type=sample_type.value)
                 report.archive = archive_result
                 signals_all.extend(archive_result["signals"])
+                archive_failed = not bool(archive_result.get("valid", True))
+                if archive_failed:
+                    # 不是有效压缩包（损坏/改名/截断）：按原始数据做内嵌载荷检查
+                    signals_all.extend(_embedded_payload_signals(raw))
             except Exception as exc:
+                archive_failed = True
                 signals_all.append(signal("static.analysis_error", "low", f"压缩包分析异常：{type(exc).__name__}: {exc}"))
+                signals_all.extend(_embedded_payload_signals(raw))
 
         elif sample_type in (SampleType.DATA, SampleType.UNKNOWN):
             try:
@@ -248,7 +255,7 @@ def analyze(sample: Sample | str | Path | bytes | bytearray | memoryview, data: 
                 signals_all.append(signal("static.analysis_error", "low", f"内嵌载荷检查异常：{type(exc).__name__}: {exc}"))
 
         # 3) 字符串 / IoC（压缩包/Office 容器内容不解压，跳过）
-        is_archive_like = sample_type in ARCHIVE_TYPES or is_office_input
+        is_archive_like = (sample_type in ARCHIVE_TYPES or is_office_input) and not archive_failed
         if not is_archive_like:
             try:
                 string_result = strings.analyze_strings(raw)
