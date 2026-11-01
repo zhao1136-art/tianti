@@ -1,7 +1,18 @@
+<div align="center">
+
 # 天体引擎 / TianTi
 
-沙箱行为分析型杀毒引擎（全新模式）：**沙箱执行 + capa 规则识别能力 + 危险行为检测**。
-不做特征码比对，只看文件「跑起来做了什么」。
+**沙箱行为分析型检测引擎 —— 沙箱执行 + capa 规则识别 + 危险行为检测。不做特征码比对，只看文件「跑起来做了什么」。**
+
+[![Python](https://img.shields.io/badge/python-3.10%2B-3776AB?logo=python&logoColor=white)](#)
+[![Platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6?logo=windows&logoColor=white)](#)
+[![Sandbox](https://img.shields.io/badge/sandbox-%E8%A1%8C%E4%B8%BA%E5%88%86%E6%9E%90-8957E5)](#)
+[![capa](https://img.shields.io/badge/rules-capa%20%E5%85%BC%E5%AE%B9-2ea44f)](#)
+[![License](https://img.shields.io/badge/license-%E7%A6%81%E6%AD%A2%E5%95%86%E7%94%A8-EA6A00)](LICENSE)
+
+</div>
+
+---
 
 ## 状态
 
@@ -212,3 +223,8 @@ docs/         计划、架构、Trace 契约、规则格式、威胁模型
 
 本项目为行为分析原型，结论不构成安全保证。
 
+---
+
+<div align="center">
+<sub>个人项目 · <a href="LICENSE">PolyForm Noncommercial License 1.0.0</a> · 禁止商业使用</sub>
+</div>
